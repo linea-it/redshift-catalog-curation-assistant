@@ -1,3 +1,26 @@
-input_file: scratch-folder-NOT-TRACKED/merged_cat_LSST_WL_Y1.fits
+input_file: tests/data/raw/desi_deep_pilot_sample.fits
 survey_name: DESI_DEEP_PILOT
-# fits_hdu: 1
+fits_hdu: 1
+unique_limit: 10
+
+column_patterns:
+  ra:
+    - "^TARGET_RA$"
+    - "^ra$"
+  dec:
+    - "^TARGET_DEC$"
+    - "^dec$"
+  redshift:
+    - "^Z$"
+    - "^best_z$"
+  quality:
+    - "^VI_quality$"
+  redshift_error:
+    - "^ZERR$"
+  id:
+    - "^TARGETID$"
+    - "^object_id$"
+  object_type:
+    - "^OBJTYPE$"
+    - "^SPECTYPE$"
+    - "^SUBTYPE$"
