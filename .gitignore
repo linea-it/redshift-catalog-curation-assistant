@@ -151,6 +151,7 @@ _html/
 
 # Scratch and temporary data folders
 scratch-folder-NOT-TRACKED/
+/reports/
 
 # Distribution info
 *.dist-info/

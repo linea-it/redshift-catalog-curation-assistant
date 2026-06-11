@@ -1,0 +1,28 @@
+input_file: tests/data/raw/2dflens_sample.dat.gz
+survey_name: 2DFLENS
+unique_limit: 10
+
+column_names:
+  - RA
+  - Dec
+  - z
+  - qual
+  - target
+  - umag
+  - gmag
+  - rmag
+  - imag
+  - zmag
+  - w1mag
+
+column_patterns:
+  ra:
+    - "^RA$"
+  dec:
+    - "^Dec$"
+  redshift:
+    - "^z$"
+  quality:
+    - "^qual$"
+  id:
+    - "^target$"

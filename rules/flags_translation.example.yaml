@@ -1,0 +1,17 @@
+survey_name: SYNTHETIC_REDSHIFT
+source_column: quality_flag
+target_column: redshift_quality
+
+rules:
+  - source_value: 4
+    target_value: secure
+    description: Secure redshift.
+  - source_value: 3
+    target_value: probable
+    description: Probable redshift.
+  - source_value: 2
+    target_value: tentative
+    description: Tentative redshift.
+  - source_value: 1
+    target_value: unreliable
+    description: Unreliable or non-galaxy measurement.

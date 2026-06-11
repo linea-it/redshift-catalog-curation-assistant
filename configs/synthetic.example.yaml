@@ -1,0 +1,21 @@
+input_file: examples/raw/synthetic_redshift_catalog.csv
+survey_name: SYNTHETIC_REDSHIFT
+unique_limit: 10
+
+column_patterns:
+  ra:
+    - "^ra$"
+  dec:
+    - "^dec$"
+  redshift:
+    - "^z_spec$"
+    - "redshift"
+  quality:
+    - "quality"
+    - "quality_flag"
+  redshift_error:
+    - "z_err"
+  id:
+    - "object_id"
+  object_type:
+    - "object_type"
