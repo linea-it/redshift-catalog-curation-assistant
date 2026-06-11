@@ -15,7 +15,7 @@ def describe_fits(path: Path, max_columns: int = 12) -> list[dict[str, Any]]:
                 "type": type(hdu).__name__,
                 "shape": hdu.data.shape if hdu.data is not None else None,
             }
-            if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+            if isinstance(hdu, fits.BinTableHDU | fits.TableHDU):
                 column_names = list(hdu.columns.names)
                 summary.update(
                     {
@@ -34,8 +34,7 @@ def format_fits_description(summaries: list[dict[str, Any]]) -> str:
     lines = []
     for summary in summaries:
         hdu_line = (
-            f"HDU {summary['index']}: {summary['name']} "
-            f"({summary['type']}), shape={summary['shape']}"
+            f"HDU {summary['index']}: {summary['name']} " f"({summary['type']}), shape={summary['shape']}"
         )
         lines.append(hdu_line)
         if "n_rows" in summary:
