@@ -1,0 +1,3 @@
+input_file: scratch-folder-NOT-TRACKED/merged_cat_LSST_WL_Y1.fits
+survey_name: DESI_DEEP_PILOT
+# fits_hdu: 1

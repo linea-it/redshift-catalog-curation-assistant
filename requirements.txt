@@ -1,0 +1,6 @@
+click
+pyyaml
+pandas
+pyarrow
+astropy
+pytest
