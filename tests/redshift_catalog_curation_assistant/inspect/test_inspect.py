@@ -67,7 +67,7 @@ def test_inspect_sample(tmp_path, monkeypatch):
 )
 def test_inspect_versioned_sample_configs(config_path, survey, n_rows, tmp_path, monkeypatch):
     """Verify versioned sample configs produce inspect reports."""
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]
     monkeypatch.chdir(repo_root)
 
     import redshift_catalog_curation_assistant.inspect as insp

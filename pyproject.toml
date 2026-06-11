@@ -55,6 +55,9 @@ build-backend = "setuptools.build_meta"
 write_to = "src/redshift_catalog_curation_assistant/_version.py"
 
 [tool.pytest.ini_options]
+pythonpath = [
+    "src",
+]
 testpaths = [
     "tests",
     "src",

@@ -2,9 +2,9 @@
 
 The repository keeps scientific naming conservative.
 
-Synthetic data must be named as synthetic data. The versioned example catalog at
-`examples/raw/synthetic_redshift_catalog.csv` is not associated with any real
-survey.
+Synthetic data must be named as synthetic data. The versioned synthetic fixture
+at `tests/data/raw/synthetic_redshift_catalog.csv` is not associated with any
+real survey.
 
 Real survey names should only be used when the input file is a real catalog or a
 sample derived from that real catalog. Small redistributable fixtures live under
@@ -20,6 +20,8 @@ Current source files used to generate the versioned fixtures:
 
 Versioned fixtures:
 
+- `tests/data/raw/synthetic_redshift_catalog.csv`: small synthetic catalog used
+  by `configs/synthetic.example.yaml`.
 - `tests/data/raw/2dflens_sample.dat.gz`: first 1000 data rows from the 2dFLenS
   file.
 - `tests/data/raw/2dfgrs_sample.idz.gz`: first 1000 original rows from the
