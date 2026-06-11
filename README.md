@@ -4,21 +4,13 @@ A simple, reproducible and extensible tool to aid in the technical curation of
 heterogeneous redshift catalogs.
 
 [![Template](https://img.shields.io/badge/Template-LINCC%20Frameworks%20Python%20Project%20Template-brightgreen)](https://lincc-ppt.readthedocs.io/en/latest/)
-
-[![PyPI](https://img.shields.io/pypi/v/redshift-catalog-curation-assistant?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/redshift-catalog-curation-assistant/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python Versions](https://img.shields.io/badge/python-3.11+-blue.svg)]()
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/luigilcsilva/redshift-catalog-curation-assistant/smoke-test.yml)](https://github.com/luigilcsilva/redshift-catalog-curation-assistant/actions/workflows/smoke-test.yml)
 [![Codecov](https://codecov.io/gh/luigilcsilva/redshift-catalog-curation-assistant/branch/main/graph/badge.svg)](https://codecov.io/gh/luigilcsilva/redshift-catalog-curation-assistant)
-[![Read The Docs](https://img.shields.io/readthedocs/redshift-catalog-curation-assistant)](https://redshift-catalog-curation-assistant.readthedocs.io/)
-[![Benchmarks](https://img.shields.io/github/actions/workflow/status/luigilcsilva/redshift-catalog-curation-assistant/asv-main.yml?label=benchmarks)](https://luigilcsilva.github.io/redshift-catalog-curation-assistant/)
 
-This project was automatically generated using the LINCC-Frameworks
-[python-project-template](https://github.com/lincc-frameworks/python-project-template).
-
-A repository badge was added to show that this project uses the python-project-template, however it's up to
-you whether or not you'd like to display it!
-
-For more information about the project template see the
-[documentation](https://lincc-ppt.readthedocs.io/en/latest/).
+This project was created following the LINCC Frameworks Python Project Template
+(https://lincc-ppt.readthedocs.io/en/latest/).
 
 The project is a local-first Python CLI. It helps a human curator inspect raw
 catalogs, identify candidate columns, and prepare explicit curation rules before
