@@ -6,7 +6,7 @@ heterogeneous redshift catalogs.
 [![Template](https://img.shields.io/badge/Template-LINCC%20Frameworks%20Python%20Project%20Template-brightgreen)](https://lincc-ppt.readthedocs.io/en/latest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python Versions](https://img.shields.io/badge/python-3.11+-blue.svg)]()
-[![Build](https://img.shields.io/github/actions/workflow/status/luigilcsilva/redshift-catalog-curation-assistant/testing-and-coverage.yml?branch=main&label=build)](https://github.com/luigilcsilva/redshift-catalog-curation-assistant/actions/workflows/testing-and-coverage.yml)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/luigilcsilva/redshift-catalog-curation-assistant/smoke-test.yml)](https://github.com/luigilcsilva/redshift-catalog-curation-assistant/actions/workflows/smoke-test.yml)
 [![Codecov](https://codecov.io/gh/luigilcsilva/redshift-catalog-curation-assistant/branch/main/graph/badge.svg)](https://codecov.io/gh/luigilcsilva/redshift-catalog-curation-assistant)
 
 This project was created following the LINCC Frameworks Python Project Template
