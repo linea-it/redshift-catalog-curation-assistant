@@ -8,8 +8,7 @@ real survey.
 
 Real survey names should only be used when the input file is a real catalog or a
 sample derived from that real catalog. Small redistributable fixtures live under
-`tests/data/raw/`. Larger exploratory source files stay under
-`scratch-folder-NOT-TRACKED/`, which is intentionally ignored by git.
+`tests/data/raw/`. Larger exploratory source files should stay outside git.
 
 Current source files used to generate the versioned fixtures:
 

@@ -101,9 +101,8 @@ pytest -q
 pre-commit run --all-files
 ```
 
-Large or redistributability-unclear source catalogs should stay outside git, for
-example under `scratch-folder-NOT-TRACKED/`. Small sample files that are safe to
-redistribute live under `tests/data/raw/`.
+Large or redistributability-unclear source catalogs should stay outside git.
+Small sample files that are safe to redistribute live under `tests/data/raw/`.
 
 ## Scientific Naming
 
