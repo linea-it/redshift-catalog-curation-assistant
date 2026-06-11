@@ -148,3 +148,9 @@ _html/
 
 # Project initialization script
 .initialize_new_project.sh
+
+# Scratch and temporary data folders
+scratch-folder-NOT-TRACKED/
+
+# Distribution info
+*.dist-info/
