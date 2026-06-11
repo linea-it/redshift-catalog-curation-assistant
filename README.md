@@ -54,7 +54,7 @@ later phases.
 ## Example
 
 The repository includes a small synthetic catalog at
-`examples/raw/synthetic_redshift_catalog.csv` and a matching config at
+`tests/data/raw/synthetic_redshift_catalog.csv` and a matching config at
 `configs/synthetic.example.yaml`.
 
 Running:
@@ -101,9 +101,8 @@ pytest -q
 pre-commit run --all-files
 ```
 
-Large or redistributability-unclear source catalogs should stay outside git, for
-example under `scratch-folder-NOT-TRACKED/`. Small sample files that are safe to
-redistribute live under `tests/data/raw/`.
+Large or redistributability-unclear source catalogs should stay outside git.
+Small sample files that are safe to redistribute live under `tests/data/raw/`.
 
 ## Scientific Naming
 
