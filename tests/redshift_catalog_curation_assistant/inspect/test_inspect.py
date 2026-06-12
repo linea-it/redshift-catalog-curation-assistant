@@ -63,6 +63,7 @@ def test_inspect_sample(tmp_path, monkeypatch):
     report = json.loads(out.read_text())
     assert report["n_rows"] == 2
     assert report["n_columns"] == 5
+    assert report["n_columns_selected"] == 5
     assert report["candidates"]["ra"] == ["ra"]
     assert report["candidates"]["dec"] == ["dec"]
     assert report["candidates"]["redshift"] == ["z_phot"]
@@ -123,6 +124,7 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
     ]
     assert report["n_rows"] == 2
     assert report["n_columns"] == 5
+    assert report["n_columns_selected"] == 5
     assert report["numeric_stats"]["z_phot"]["count"] == 2
     assert report["categorical_uniques"]["kind"] == ["galaxy", "qso"]
     assert report["sample"][0]["id"] == 1
@@ -194,6 +196,52 @@ def test_inspect_csv_defaults_to_candidate_stats(tmp_path, monkeypatch):
     assert report["warnings"]
 
 
+def test_inspect_config_column_selection_limits_report_columns(tmp_path, monkeypatch):
+    """Verify column_selection limits sample, candidates, dtypes, and stats."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "wide.csv"
+    csv.write_text("object_id,ra,dec,z,kind,extra\n" "1,10.0,-1.0,0.1,galaxy,5\n" "2,11.0,-1.1,0.2,qso,6\n")
+    cfg = {
+        "input_file": str(csv),
+        "survey_name": "SELECTED_CSV",
+        "column_selection": ["object_id", "z", "kind"],
+        "stats_mode": "all",
+    }
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    outdir = insp.run_inspect_config(cfg)
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert report["n_columns"] == 6
+    assert report["n_columns_selected"] == 3
+    assert report["columns"] == ["object_id", "z", "kind"]
+    assert set(report["dtypes"]) == {"object_id", "z", "kind"}
+    assert report["candidates"]["ra"] == []
+    assert set(report["numeric_stats"]) == {"object_id", "z"}
+    assert report["categorical_uniques"]["kind"] == ["galaxy", "qso"]
+    assert report["sample"][0] == {"object_id": 1, "z": 0.1, "kind": "galaxy"}
+    assert "Report was limited to 3 selected columns out of 6 available columns." in report["warnings"]
+
+
+def test_inspect_config_column_selection_rejects_missing_columns(tmp_path, monkeypatch):
+    """Verify missing selected columns fail before report generation."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    with pytest.raises(ValueError, match="column_selection contains columns not present in input: missing"):
+        insp.run_inspect_config(
+            {
+                "input_file": str(csv),
+                "survey_name": "BAD_SELECTION",
+                "column_selection": ["object_id", "missing"],
+            }
+        )
+
+
 def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatch):
     """Verify wide Parquet inspection avoids materializing all columns for sample/stats."""
     monkeypatch.chdir(tmp_path)
@@ -222,6 +270,7 @@ def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatc
 
     assert report["n_rows"] == 3
     assert report["n_columns"] == 13
+    assert report["n_columns_selected"] == 13
     assert len(report["sample"][0]) == 4
     assert report["candidates"]["ra"] == ["ra"]
     assert report["candidates"]["dec"] == ["dec"]
@@ -270,6 +319,8 @@ def test_inspect_fits_uses_selective_sample_and_stats(tmp_path, monkeypatch):
     report = json.loads((outdir / "inspect_report.json").read_text())
 
     assert len(report["sample"][0]) == 3
+    assert report["n_columns"] == 5
+    assert report["n_columns_selected"] == 5
     assert set(report["numeric_stats"]) == {"RA", "DEC", "Z"}
     assert report["numeric_stats"]["Z"]["mean"] == pytest.approx(0.2)
     assert report["categorical_uniques"]["CLASS"] == ["GALAXY", "QSO"]

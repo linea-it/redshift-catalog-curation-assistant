@@ -146,6 +146,28 @@ redshift-curator inspect --path sample.dat.gz --column-names '["RA", "Dec", "z"]
 redshift-curator inspect configs/2dflens.sample.yaml
 ```
 
+To inspect only a reviewed subset of columns, pass `column_selection` in YAML:
+
+```yaml
+column_selection:
+  - RA
+  - DEC
+  - Z
+  - ZWARNING
+```
+
+The report keeps `n_columns` as the original catalog width and adds
+`n_columns_selected` for the subset used by `columns`, `dtypes`, candidates,
+sample rows, and statistics. The same selection can be passed through the CLI:
+
+```bash
+redshift-curator inspect --path catalog.fits \
+  --column-selection RA --column-selection DEC --column-selection Z
+
+redshift-curator inspect --path catalog.fits \
+  --column-selection-list '["RA", "DEC", "Z"]'
+```
+
 ## Development
 
 Run tests and checks with:

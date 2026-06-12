@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 
 from click.testing import CliRunner
@@ -227,6 +228,100 @@ def test_inspect_path_accepts_comma_separated_column_names(tmp_path, monkeypatch
 
     assert result.exit_code == 0
     assert (tmp_path / "reports" / "HEADERLESS_CSV" / "inspect_report.json").exists()
+
+
+def test_inspect_path_accepts_column_selection(tmp_path, monkeypatch):
+    """Ensure inspect --path can limit reports with repeated --column-selection."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z,extra\n1,10.0,-1.0,0.1,5\n2,11.0,-1.1,0.2,6\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "inspect",
+            "--path",
+            str(csv),
+            "--survey-name",
+            "SELECTED",
+            "--column-selection",
+            "ra",
+            "--column-selection",
+            "z",
+        ],
+    )
+
+    assert result.exit_code == 0
+    report = json.loads((tmp_path / "reports" / "SELECTED" / "inspect_report.json").read_text())
+    assert report["n_columns"] == 5
+    assert report["n_columns_selected"] == 2
+    assert report["columns"] == ["ra", "z"]
+    assert report["sample"][0] == {"ra": 10.0, "z": 0.1}
+    assert set(report["numeric_stats"]) == {"ra", "z"}
+    assert "object_id" not in report["numeric_stats"]
+
+
+def test_inspect_path_accepts_column_selection_list(tmp_path, monkeypatch):
+    """Ensure inspect --path can limit reports with --column-selection-list."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,10.0,-1.0,0.1\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "inspect",
+            "--path",
+            str(csv),
+            "--survey-name",
+            "SELECTED_LIST",
+            "--column-selection-list",
+            '["object_id", "z"]',
+        ],
+    )
+
+    assert result.exit_code == 0
+    report = json.loads((tmp_path / "reports" / "SELECTED_LIST" / "inspect_report.json").read_text())
+    assert report["n_columns"] == 4
+    assert report["n_columns_selected"] == 2
+    assert report["columns"] == ["object_id", "z"]
+
+
+def test_inspect_rejects_mixed_column_selection_options(tmp_path):
+    """Ensure the two column-selection option styles cannot be mixed."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "inspect",
+            "--path",
+            str(csv),
+            "--column-selection",
+            "object_id",
+            "--column-selection-list",
+            '["object_id", "z"]',
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Use either --column-selection repeatedly or --column-selection-list once" in result.output
+
+
+def test_inspect_rejects_missing_column_selection(tmp_path, monkeypatch):
+    """Ensure invalid selected columns fail with a clear error."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    result = CliRunner().invoke(
+        cli,
+        ["inspect", "--path", str(csv), "--column-selection-list", "object_id,missing"],
+    )
+
+    assert result.exit_code != 0
+    assert "column_selection contains columns not present in input: missing" in result.output
 
 
 def test_inspect_rejects_mixed_column_name_options(tmp_path):

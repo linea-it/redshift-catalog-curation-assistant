@@ -121,6 +121,32 @@ def _sample_columns(columns: list[str], candidate_cols: list[str], config: dict[
     return _ordered_unique([*candidate_cols, *columns])[:max_columns]
 
 
+def _column_selection(config: dict[str, Any]) -> list[str] | None:
+    selection = config.get("column_selection")
+    if selection is None:
+        return None
+    if not isinstance(selection, list | tuple) or not all(isinstance(value, str) for value in selection):
+        msg = "column_selection must be a list of column names."
+        raise ValueError(msg)
+    return _ordered_unique(value.strip() for value in selection if value.strip())
+
+
+def _selected_report_columns(columns: list[str], config: dict[str, Any]) -> tuple[list[str], list[str]]:
+    selection = _column_selection(config)
+    if selection is None:
+        return columns, []
+
+    available = set(columns)
+    missing = [column for column in selection if column not in available]
+    if missing:
+        msg = "column_selection contains columns not present in input: " + ", ".join(missing)
+        raise ValueError(msg)
+
+    return selection, [
+        f"Report was limited to {len(selection)} selected columns out of {len(columns)} available columns."
+    ]
+
+
 def _stats_mode(config: dict[str, Any]) -> str:
     stats_mode = str(config.get("stats_mode", "candidates")).lower()
     if stats_mode not in STATS_MODES:
@@ -330,11 +356,11 @@ def _parquet_categorical_uniques(
 def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any]) -> dict[str, Any]:
     dataset = _parquet_dataset(input_path)
     schema = dataset.schema
-    columns = _parquet_columns(schema)
+    all_columns = _parquet_columns(schema)
+    columns, warnings = _selected_report_columns(all_columns, config)
     patterns = build_patterns(config)
     candidates = candidate_columns(columns, patterns)
     candidate_cols = _flatten_candidates(candidates)
-    warnings = []
 
     sample_columns = _sample_columns(columns, candidate_cols, config)
     if len(sample_columns) < len(columns):
@@ -352,15 +378,19 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
     numeric_cols, categorical_cols, stats_warnings = _parquet_stats_columns(
         schema, columns, candidate_cols, config
     )
+    numeric_cols = [column for column in numeric_cols if column in columns]
+    categorical_cols = [column for column in categorical_cols if column in columns]
     warnings.extend(stats_warnings)
+    dtypes = _parquet_dtypes(schema)
 
     return {
         "survey": survey,
         "input_file": str(input_path),
         "n_rows": _parquet_count_rows(dataset),
-        "n_columns": len(columns),
+        "n_columns": len(all_columns),
+        "n_columns_selected": len(columns),
         "columns": columns,
-        "dtypes": _parquet_dtypes(schema),
+        "dtypes": {column: dtypes[column] for column in columns},
         "candidates": candidates,
         "numeric_stats": _parquet_numeric_stats(dataset, numeric_cols, batch_size),
         "categorical_uniques": _parquet_categorical_uniques(
@@ -473,12 +503,13 @@ def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) ->
     with fitsio.FITS(input_path) as fits_file:
         hdu = fits_file[fits_hdu]
         header = hdu.read_header()
-        columns = _fits_table_column_names(header)
-        formats = _fits_table_formats(header, columns)
+        all_columns = _fits_table_column_names(header)
+        all_formats = _fits_table_formats(header, all_columns)
+        columns, warnings = _selected_report_columns(all_columns, config)
+        formats = {column: all_formats[column] for column in columns}
         patterns = build_patterns(config)
         candidates = candidate_columns(columns, patterns)
         candidate_cols = _flatten_candidates(candidates)
-        warnings = []
 
         sample_columns = _sample_columns(columns, candidate_cols, config)
         if len(sample_columns) < len(columns):
@@ -518,7 +549,8 @@ def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) ->
             "survey": survey,
             "input_file": str(input_path),
             "n_rows": int(header.get("NAXIS2", 0) or 0),
-            "n_columns": len(columns),
+            "n_columns": len(all_columns),
+            "n_columns_selected": len(columns),
             "columns": columns,
             "dtypes": formats,
             "candidates": candidates,
@@ -577,10 +609,11 @@ def _build_report(
     input_path: Path, survey: str, df: pd.DataFrame | Any, config: dict[str, Any]
 ) -> dict[str, Any]:
     patterns = build_patterns(config)
-    columns = list(df.columns)
+    all_columns = list(df.columns)
+    columns, warnings = _selected_report_columns(all_columns, config)
+    report_df = df[columns] if columns else df[[]]
     candidates = candidate_columns(columns, patterns)
     candidate_cols = _flatten_candidates(candidates)
-    warnings = []
 
     sample_columns = _sample_columns(columns, candidate_cols, config)
     if len(sample_columns) < len(columns):
@@ -588,12 +621,12 @@ def _build_report(
             f"Sample was limited to {len(sample_columns)} of {len(columns)} columns. "
             "Increase sample_max_columns to include more columns."
         )
-    sample_input = df[sample_columns] if sample_columns else df[[]]
+    sample_input = report_df[sample_columns] if sample_columns else report_df[[]]
     sample = _head(sample_input, 5)
     sample = _compute_if_needed(sample)
 
-    numeric_columns = list(df.select_dtypes(include="number").columns)
-    categorical_columns = list(df.select_dtypes(exclude="number").columns)
+    numeric_columns = list(report_df.select_dtypes(include="number").columns)
+    categorical_columns = list(report_df.select_dtypes(exclude="number").columns)
     numeric_cols, categorical_cols, stats_warnings = _selected_stats_columns(
         columns,
         numeric_columns=numeric_columns,
@@ -604,16 +637,17 @@ def _build_report(
     )
     warnings.extend(stats_warnings)
 
-    stats_df = df[numeric_cols] if numeric_cols else df[[]]
-    categorical_df = df[categorical_cols] if categorical_cols else df[[]]
+    stats_df = report_df[numeric_cols] if numeric_cols else report_df[[]]
+    categorical_df = report_df[categorical_cols] if categorical_cols else report_df[[]]
 
     return {
         "survey": survey,
         "input_file": str(input_path),
         "n_rows": int(len(df)),
-        "n_columns": int(len(columns)),
+        "n_columns": int(len(all_columns)),
+        "n_columns_selected": int(len(columns)),
         "columns": columns,
-        "dtypes": {c: str(t) for c, t in df.dtypes.items()},
+        "dtypes": {c: str(t) for c, t in report_df.dtypes.items()},
         "candidates": candidates,
         "numeric_stats": gather_stats(stats_df),
         "categorical_uniques": gather_categorical_uniques(
@@ -622,6 +656,20 @@ def _build_report(
         "sample": sample.to_dict(orient="records"),
         "warnings": warnings,
     }
+
+
+def _write_report(outdir: Path, survey: str, input_path: Path, report: dict[str, Any]) -> None:
+    (outdir / "inspect_report.json").write_text(json.dumps(report, indent=2, default=json_default))
+    md = [f"# Inspect report: {survey}\n"]
+    md.append(f"Input file: {input_path}\n")
+    md.append(
+        f"Rows: {report['n_rows']}  Columns: {report['n_columns']}  "
+        f"Selected columns: {report['n_columns_selected']}\n"
+    )
+    md.append("## Candidate columns by category\n")
+    for k, v in report["candidates"].items():
+        md.append(f"- **{k}**: {', '.join(v) if v else '—'}\n")
+    (outdir / "inspect_report.md").write_text("\n".join(md))
 
 
 def run_inspect_config(config: dict[str, Any]) -> Path:
@@ -634,26 +682,12 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
 
     if _is_parquet_input(input_path):
         report = _build_parquet_report(input_path, survey, cfg)
-        (outdir / "inspect_report.json").write_text(json.dumps(report, indent=2, default=json_default))
-        md = [f"# Inspect report: {survey}\n"]
-        md.append(f"Input file: {input_path}\n")
-        md.append(f"Rows: {report['n_rows']}  Columns: {report['n_columns']}\n")
-        md.append("## Candidate columns by category\n")
-        for k, v in report["candidates"].items():
-            md.append(f"- **{k}**: {', '.join(v) if v else '—'}\n")
-        (outdir / "inspect_report.md").write_text("\n".join(md))
+        _write_report(outdir, survey, input_path, report)
         return outdir
 
     if _is_fits_input(input_path):
         report = _build_fits_report(input_path, survey, cfg)
-        (outdir / "inspect_report.json").write_text(json.dumps(report, indent=2, default=json_default))
-        md = [f"# Inspect report: {survey}\n"]
-        md.append(f"Input file: {input_path}\n")
-        md.append(f"Rows: {report['n_rows']}  Columns: {report['n_columns']}\n")
-        md.append("## Candidate columns by category\n")
-        for k, v in report["candidates"].items():
-            md.append(f"- **{k}**: {', '.join(v) if v else '—'}\n")
-        (outdir / "inspect_report.md").write_text("\n".join(md))
+        _write_report(outdir, survey, input_path, report)
         return outdir
 
     from ..io import read_table
@@ -674,14 +708,7 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
     else:
         report = _build_report(input_path, survey, df, cfg)
 
-    (outdir / "inspect_report.json").write_text(json.dumps(report, indent=2, default=json_default))
-    md = [f"# Inspect report: {survey}\n"]
-    md.append(f"Input file: {input_path}\n")
-    md.append(f"Rows: {report['n_rows']}  Columns: {report['n_columns']}\n")
-    md.append("## Candidate columns by category\n")
-    for k, v in report["candidates"].items():
-        md.append(f"- **{k}**: {', '.join(v) if v else '—'}\n")
-    (outdir / "inspect_report.md").write_text("\n".join(md))
+    _write_report(outdir, survey, input_path, report)
     return outdir
 
 

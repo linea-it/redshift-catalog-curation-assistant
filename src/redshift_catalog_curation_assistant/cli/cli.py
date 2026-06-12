@@ -49,6 +49,17 @@ def cli():
     help="Column names for a headerless file as a Python-style list or comma-separated string.",
 )
 @click.option(
+    "--column-selection",
+    "column_selection",
+    multiple=True,
+    help="Column to include in the inspection report. Repeat once per selected column.",
+)
+@click.option(
+    "--column-selection-list",
+    "column_selection_list",
+    help="Columns to include in the report as a Python-style list or comma-separated string.",
+)
+@click.option(
     "--dask-threshold-mb",
     default=100.0,
     show_default=True,
@@ -68,6 +79,8 @@ def inspect(
     unique_limit,
     column_names,
     column_names_list,
+    column_selection,
+    column_selection_list,
     dask_threshold_mb,
     dask_cluster,
 ):
@@ -79,7 +92,6 @@ def inspect(
         cfg = rc_inspect.load_config(Path(config))
         cfg.setdefault("dask_threshold_mb", dask_threshold_mb)
         cfg.setdefault("dask_cluster", _parse_dask_cluster_option(dask_cluster))
-        outdir = rc_inspect.run_inspect_config(cfg)
     else:
         path = Path(input_path)
         cfg = {
@@ -93,25 +105,60 @@ def inspect(
         parsed_column_names = _parse_column_names_options(column_names, column_names_list)
         if parsed_column_names:
             cfg["column_names"] = parsed_column_names
+        parsed_column_selection = _parse_column_selection_options(column_selection, column_selection_list)
+        if parsed_column_selection:
+            cfg["column_selection"] = parsed_column_selection
+
+    try:
         outdir = rc_inspect.run_inspect_config(cfg)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(f"Wrote inspection reports to {outdir}")
 
 
 def _parse_column_names_options(column_names: tuple[str, ...], column_names_list: str | None) -> list[str]:
-    if column_names and column_names_list:
-        raise click.UsageError("Use either --column-name repeatedly or --column-names once, not both.")
-    if column_names:
-        return list(column_names)
-    if not column_names_list:
+    return _parse_repeated_or_list_option(
+        values=column_names,
+        values_list=column_names_list,
+        repeated_option="--column-name",
+        list_option="--column-names",
+        example='["RA", "Dec", "z"]',
+    )
+
+
+def _parse_column_selection_options(
+    column_selection: tuple[str, ...], column_selection_list: str | None
+) -> list[str]:
+    return _parse_repeated_or_list_option(
+        values=column_selection,
+        values_list=column_selection_list,
+        repeated_option="--column-selection",
+        list_option="--column-selection-list",
+        example='["RA", "Dec", "z"]',
+    )
+
+
+def _parse_repeated_or_list_option(
+    values: tuple[str, ...],
+    values_list: str | None,
+    repeated_option: str,
+    list_option: str,
+    example: str,
+) -> list[str]:
+    if values and values_list:
+        raise click.UsageError(f"Use either {repeated_option} repeatedly or {list_option} once, not both.")
+    if values:
+        return [value.strip() for value in values if value.strip()]
+    if not values_list:
         return []
 
     try:
-        parsed = ast.literal_eval(column_names_list)
+        parsed = ast.literal_eval(values_list)
     except (SyntaxError, ValueError):
-        parsed = [value.strip() for value in column_names_list.split(",")]
+        parsed = [value.strip() for value in values_list.split(",")]
 
     if not isinstance(parsed, list | tuple) or not all(isinstance(value, str) for value in parsed):
-        raise click.BadParameter('Expected a list of strings, e.g. \'["RA", "Dec", "z"]\'.')
+        raise click.BadParameter(f"Expected a list of strings, e.g. '{example}'.")
     return [value.strip() for value in parsed if value.strip()]
 
 
