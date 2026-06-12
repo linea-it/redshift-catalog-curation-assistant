@@ -11,12 +11,13 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_DASK_CLUSTER_CONFIG: dict[str, Any] = {
     "name": "local",
     "args": {
-        "n_workers": 2,
+        "n_workers": 3,
         "threads_per_worker": 1,
-        "memory_limit": "1GB",
+        "memory_limit": "2GB",
         "dashboard_address": None,
     },
 }
+SUPPORTED_DASK_EXECUTORS = {"local", "slurm"}
 
 
 class DaskClusterConfigError(ValueError):
@@ -45,7 +46,15 @@ def dask_cluster_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_dask_cluster_config(cluster_config: dict[str, Any]) -> None:
-    if str(cluster_config.get("name", "local")).lower() != "slurm":
+    executor_name = str(cluster_config.get("name", "local")).lower()
+    if executor_name not in SUPPORTED_DASK_EXECUTORS:
+        msg = (
+            f"Unsupported Dask executor: {cluster_config.get('name')!r}. "
+            f"Supported executors are: {', '.join(sorted(SUPPORTED_DASK_EXECUTORS))}."
+        )
+        raise DaskClusterConfigError(msg)
+
+    if executor_name != "slurm":
         return
 
     args = dict(cluster_config.get("args", {}) or {})
@@ -133,10 +142,11 @@ def create_dask_cluster(cluster_config: dict[str, Any], logs_dir: Path | None = 
 
         return cluster
 
-    LOGGER.warning("Unknown Dask executor '%s'. Falling back to a minimal LocalCluster.", executor_name)
-    from dask.distributed import LocalCluster
-
-    return LocalCluster(n_workers=1, threads_per_worker=1, memory_limit="1GB")
+    msg = (
+        f"Unsupported Dask executor: {cluster_config.get('name')!r}. "
+        f"Supported executors are: {', '.join(sorted(SUPPORTED_DASK_EXECUTORS))}."
+    )
+    raise DaskClusterConfigError(msg)
 
 
 @contextmanager

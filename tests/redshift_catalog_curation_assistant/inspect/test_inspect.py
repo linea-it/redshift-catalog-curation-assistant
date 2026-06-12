@@ -21,6 +21,10 @@ def test_default_patterns_cover_common_sample_columns():
             "qual",
             "ETA_TYPE",
             "MEAN_DELTA_X",
+            "lines_spe_rank_rank0_halpha",
+            "mer_fluxerr_z_ext_decam_1fwhm_aper",
+            "lines_spe_line_id_rank0_halpha",
+            "physparam_sfhtype",
         ],
         insp.PATTERNS,
     )
@@ -29,6 +33,8 @@ def test_default_patterns_cover_common_sample_columns():
     assert matches["dec"] == ["OBSDEC", "dec_j2000_d"]
     assert matches["redshift"] == ["z_helio"]
     assert matches["quality"] == ["qual"]
+    assert matches["redshift_error"] == []
+    assert matches["id"] == []
     assert matches["object_type"] == ["ETA_TYPE"]
 
 
@@ -101,7 +107,7 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
                 "args": {
                     "n_workers": 1,
                     "threads_per_worker": 1,
-                    "memory_limit": "1GB",
+                    "memory_limit": "2GB",
                     "processes": False,
                     "dashboard_address": None,
                 },
@@ -133,6 +139,68 @@ def test_gather_stats_handles_non_native_numeric_byte_order():
     assert stats["object_id"]["mean"] == 1.5
     assert stats["z"]["count"] == 2
     assert stats["z"]["mean"] == pytest.approx(0.15)
+
+
+def test_gather_stats_reports_null_counts_without_nan_values():
+    """Verify empty numeric columns are reported as JSON-friendly null stats."""
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    stats = insp.gather_stats(pd.DataFrame({"empty": [np.nan, np.nan], "single": [1.0, np.nan]}))
+
+    assert stats["empty"] == {
+        "count": 0,
+        "null_count": 2,
+        "mean": None,
+        "std": None,
+        "min": None,
+        "max": None,
+    }
+    assert stats["single"] == {
+        "count": 1,
+        "null_count": 1,
+        "mean": 1.0,
+        "std": None,
+        "min": 1.0,
+        "max": 1.0,
+    }
+
+
+def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatch):
+    """Verify wide Parquet inspection avoids materializing all columns for sample/stats."""
+    monkeypatch.chdir(tmp_path)
+    data = {
+        "object_id": [1, 2, 3],
+        "ra": [10.0, 11.0, 12.0],
+        "dec": [-1.0, -1.1, -1.2],
+        "z": [0.1, 0.2, 0.3],
+        "kind": ["galaxy", "qso", "galaxy"],
+    }
+    data.update({f"extra_{idx}": [idx, idx + 1, idx + 2] for idx in range(8)})
+    parquet = tmp_path / "wide.parquet"
+    pd.DataFrame(data).to_parquet(parquet)
+
+    cfg = {
+        "input_file": str(parquet),
+        "survey_name": "WIDE_PARQUET",
+        "parquet_wide_column_threshold": 5,
+        "parquet_sample_max_columns": 4,
+        "parquet_stats_batch_size": 2,
+    }
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    outdir = insp.run_inspect_config(cfg)
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert report["n_rows"] == 3
+    assert report["n_columns"] == 13
+    assert len(report["sample"][0]) == 4
+    assert report["candidates"]["ra"] == ["ra"]
+    assert report["candidates"]["dec"] == ["dec"]
+    assert report["candidates"]["redshift"] == ["z"]
+    assert set(report["numeric_stats"]) == {"object_id", "ra", "dec", "z"}
+    assert report["numeric_stats"]["z"]["mean"] == pytest.approx(0.2)
+    assert report["warnings"]
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -72,8 +71,8 @@ def test_inspect_path_accepts_partitioned_parquet_directory(tmp_path, monkeypatc
     assert (tmp_path / "reports" / "PARQUET_DIR" / "inspect_report.json").exists()
 
 
-def test_inspect_path_accepts_dask_cluster_dict(tmp_path, monkeypatch):
-    """Ensure --dask-cluster accepts the executor config schema as a dict literal."""
+def test_inspect_parquet_path_does_not_start_dask_cluster(tmp_path, monkeypatch):
+    """Ensure Parquet inspection uses the PyArrow path instead of Dask."""
     import pandas as pd
 
     import redshift_catalog_curation_assistant.executor as dex
@@ -110,22 +109,8 @@ def test_inspect_path_accepts_dask_cluster_dict(tmp_path, monkeypatch):
     )
 
     assert result.exit_code == 0
-    assert client_calls == [
-        (
-            {
-                "name": "local",
-                "logs_dir": "reports/dask-logs",
-                "args": {
-                    "n_workers": 1,
-                    "threads_per_worker": 1,
-                    "memory_limit": "1GB",
-                    "dashboard_address": None,
-                    "processes": False,
-                },
-            },
-            Path("reports/dask-logs"),
-        )
-    ]
+    assert client_calls == []
+    assert (tmp_path / "reports" / "PARQUET_CLUSTER" / "inspect_report.json").exists()
 
 
 def test_inspect_rejects_invalid_dask_cluster_option(tmp_path):

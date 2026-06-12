@@ -1,6 +1,10 @@
 import pytest
 
-from redshift_catalog_curation_assistant.executor import DaskClusterConfigError, dask_cluster_config
+from redshift_catalog_curation_assistant.executor import (
+    DaskClusterConfigError,
+    create_dask_cluster,
+    dask_cluster_config,
+)
 
 
 def test_dask_cluster_config_defaults_to_small_local_cluster():
@@ -8,9 +12,9 @@ def test_dask_cluster_config_defaults_to_small_local_cluster():
     config = dask_cluster_config({})
 
     assert config["name"] == "local"
-    assert config["args"]["n_workers"] == 2
+    assert config["args"]["n_workers"] == 3
     assert config["args"]["threads_per_worker"] == 1
-    assert config["args"]["memory_limit"] == "1GB"
+    assert config["args"]["memory_limit"] == "2GB"
     assert config["args"]["dashboard_address"] is None
 
 
@@ -21,7 +25,7 @@ def test_dask_cluster_config_merges_local_overrides():
     assert config["name"] == "local"
     assert config["args"]["n_workers"] == 4
     assert config["args"]["threads_per_worker"] == 1
-    assert config["args"]["memory_limit"] == "1GB"
+    assert config["args"]["memory_limit"] == "2GB"
     assert config["args"]["dashboard_address"] is None
 
 
@@ -53,6 +57,18 @@ def test_dask_cluster_config_rejects_incomplete_slurm_config():
     """Ensure SLURM configs fail before creating an unusable cluster."""
     with pytest.raises(DaskClusterConfigError, match="args.instance.*args.scale.minimum_jobs"):
         dask_cluster_config({"dask_cluster": {"name": "slurm"}})
+
+
+def test_dask_cluster_config_rejects_unknown_executor():
+    """Ensure typos in executor names fail instead of silently using local Dask."""
+    with pytest.raises(DaskClusterConfigError, match="Unsupported Dask executor.*slrum"):
+        dask_cluster_config({"dask_cluster": {"name": "slrum"}})
+
+
+def test_create_dask_cluster_rejects_unknown_executor():
+    """Ensure direct cluster creation also rejects unknown executor names."""
+    with pytest.raises(DaskClusterConfigError, match="Unsupported Dask executor.*unknown"):
+        create_dask_cluster({"name": "unknown"})
 
 
 def test_dask_cluster_config_rejects_slurm_without_initial_jobs():
