@@ -105,7 +105,7 @@ Partitioned Parquet datasets are also accepted as input directories and are
 always read with Dask:
 
 ```bash
-redshift-curator inspect --path converted_catalog.parquet
+redshift-curator inspect --path converted_catalog/
 ```
 
 Advanced users can configure the cluster in YAML:
