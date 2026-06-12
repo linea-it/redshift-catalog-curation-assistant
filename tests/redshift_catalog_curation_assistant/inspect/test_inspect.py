@@ -2,6 +2,8 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 
@@ -112,6 +114,25 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
     assert report["numeric_stats"]["z_phot"]["count"] == 2
     assert report["categorical_uniques"]["kind"] == ["galaxy", "qso"]
     assert report["sample"][0]["id"] == 1
+
+
+def test_gather_stats_handles_non_native_numeric_byte_order():
+    """Verify FITS-style big-endian numeric columns do not break stats."""
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    df = pd.DataFrame(
+        {
+            "object_id": np.array([1, 2], dtype=">i8"),
+            "z": np.array([0.1, 0.2], dtype=">f8"),
+        }
+    )
+
+    stats = insp.gather_stats(df)
+
+    assert stats["object_id"]["count"] == 2
+    assert stats["object_id"]["mean"] == 1.5
+    assert stats["z"]["count"] == 2
+    assert stats["z"]["mean"] == pytest.approx(0.15)
 
 
 @pytest.mark.parametrize(

@@ -149,3 +149,23 @@ def test_large_fits_can_be_loaded_with_explicit_opt_in(tmp_path):
 
     assert list(df.columns) == ["z"]
     assert len(df) == 1
+
+
+def test_fits_numeric_columns_are_converted_to_native_byte_order(tmp_path):
+    """Ensure FITS big-endian numeric columns are safe for pandas/numpy stats."""
+    from astropy.io import fits
+    from astropy.table import Table
+
+    path = tmp_path / "sample.fits"
+    fits.HDUList(
+        [
+            fits.PrimaryHDU(),
+            fits.BinTableHDU(Table({"object_id": [1, 2], "z": [0.1, 0.2]}), name="CATALOG"),
+        ]
+    ).writeto(path)
+
+    df = read_table(path, dask_threshold_bytes=None)
+
+    assert df["object_id"].dtype.isnative
+    assert df["z"].dtype.isnative
+    assert df["z"].mean() == pytest.approx(0.15)

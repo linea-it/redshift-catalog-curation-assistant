@@ -64,6 +64,10 @@ def _head(df: pd.DataFrame | Any, n_rows: int) -> pd.DataFrame:
     return df.head(n_rows)
 
 
+def _native_float_values(series: pd.Series) -> np.ndarray:
+    return series.to_numpy(dtype=np.float64, na_value=np.nan)
+
+
 def gather_stats(df: pd.DataFrame | Any) -> dict[str, dict[str, float | int]]:
     """Collect simple numeric statistics for a DataFrame."""
     stats: dict[str, dict[str, float | int]] = {}
@@ -83,12 +87,14 @@ def gather_stats(df: pd.DataFrame | Any) -> dict[str, dict[str, float | int]]:
         return stats
 
     for col in numeric.columns:
+        values = _native_float_values(numeric[col])
+        count = int(np.count_nonzero(~np.isnan(values)))
         stats[col] = {
-            "count": int(numeric[col].count()),
-            "mean": float(numeric[col].mean()),
-            "std": float(numeric[col].std()),
-            "min": float(numeric[col].min()),
-            "max": float(numeric[col].max()),
+            "count": count,
+            "mean": float(np.nanmean(values)) if count else float("nan"),
+            "std": float(np.nanstd(values, ddof=1)) if count > 1 else float("nan"),
+            "min": float(np.nanmin(values)) if count else float("nan"),
+            "max": float(np.nanmax(values)) if count else float("nan"),
         }
     return stats
 

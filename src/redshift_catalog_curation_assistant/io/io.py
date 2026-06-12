@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 HEADERLESS_SUFFIXES = {".dat", ".idz"}
@@ -37,7 +38,10 @@ def _table_to_dataframe(table) -> pd.DataFrame:
         if len(column.shape) > 1:
             data[name] = column.tolist()
         else:
-            data[name] = column
+            values = np.asarray(column)
+            if values.dtype.byteorder not in ("=", "|"):
+                values = values.astype(values.dtype.newbyteorder("="), copy=False)
+            data[name] = values
     return pd.DataFrame(data)
 
 
