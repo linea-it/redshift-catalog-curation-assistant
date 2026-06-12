@@ -33,9 +33,7 @@ def format_fits_description(summaries: list[dict[str, Any]]) -> str:
     """Format FITS HDU summaries for CLI output."""
     lines = []
     for summary in summaries:
-        hdu_line = (
-            f"HDU {summary['index']}: {summary['name']} " f"({summary['type']}), shape={summary['shape']}"
-        )
+        hdu_line = f"HDU {summary['index']}: {summary['name']} ({summary['type']}), shape={summary['shape']}"
         lines.append(hdu_line)
         if "n_rows" in summary:
             lines.append(f"  rows={summary['n_rows']} columns={summary['n_columns']}")

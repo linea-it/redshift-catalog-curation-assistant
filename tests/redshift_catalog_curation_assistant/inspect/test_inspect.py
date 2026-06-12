@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,63 @@ def test_inspect_sample(tmp_path, monkeypatch):
     assert report["candidates"]["redshift"] == ["z_phot"]
     assert report["candidates"]["quality"] == ["VI_quality"]
     assert (Path("reports") / "TEST" / "inspect_report.md").exists()
+
+
+def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
+    """Verify inspect can generate the same core report through Dask."""
+    data = "id,ra,dec,z_phot,kind\n1,10.0,0.1,0.5,galaxy\n2,11.0,0.2,0.6,qso\n"
+    csv = tmp_path / "sample.csv"
+    csv.write_text(data)
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        f"input_file: {csv}\n"
+        "survey_name: TEST_DASK\n"
+        "dask_threshold_mb: 0.000001\n"
+        "dask_cluster:\n"
+        "  name: local\n"
+        "  args:\n"
+        "    n_workers: 1\n"
+        "    threads_per_worker: 1\n"
+        "    processes: false\n"
+        "    dashboard_address: null\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    import redshift_catalog_curation_assistant.executor as dex
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    client_calls = []
+
+    @contextmanager
+    def fake_dask_client_context(cluster_config, logs_dir=None):
+        client_calls.append((cluster_config, logs_dir))
+        yield
+
+    monkeypatch.setattr(dex, "dask_client_context", fake_dask_client_context)
+
+    outdir = insp.run_inspect(cfg)
+
+    report = json.loads((outdir / "inspect_report.json").read_text())
+    assert client_calls == [
+        (
+            {
+                "name": "local",
+                "args": {
+                    "n_workers": 1,
+                    "threads_per_worker": 1,
+                    "memory_limit": "1GB",
+                    "processes": False,
+                    "dashboard_address": None,
+                },
+            },
+            None,
+        )
+    ]
+    assert report["n_rows"] == 2
+    assert report["n_columns"] == 5
+    assert report["numeric_stats"]["z_phot"]["count"] == 2
+    assert report["categorical_uniques"]["kind"] == ["galaxy", "qso"]
+    assert report["sample"][0]["id"] == 1
 
 
 @pytest.mark.parametrize(

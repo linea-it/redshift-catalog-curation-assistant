@@ -3,9 +3,9 @@ from pathlib import Path
 
 import click
 
-from . import __version__
-from . import fits as rc_fits
-from . import inspect as rc_inspect
+from .. import __version__
+from .. import fits as rc_fits
+from .. import inspect as rc_inspect
 
 
 @click.group()
@@ -18,8 +18,8 @@ def cli():
 @click.option(
     "--path",
     "input_path",
-    type=click.Path(exists=True, dir_okay=False),
-    help="Catalog file to inspect.",
+    type=click.Path(exists=True, dir_okay=True, file_okay=True),
+    help="Catalog file or partitioned Parquet directory to inspect.",
 )
 @click.option(
     "--survey-name",
@@ -48,13 +48,47 @@ def cli():
     "column_names_list",
     help="Column names for a headerless file as a Python-style list or comma-separated string.",
 )
-def inspect(config, input_path, survey_name, fits_hdu, unique_limit, column_names, column_names_list):
+@click.option(
+    "--dask-threshold-mb",
+    default=100.0,
+    show_default=True,
+    help="Use Dask for supported non-FITS files at or above this size. Use 0 to disable.",
+)
+@click.option(
+    "--dask-cluster",
+    type=click.Choice(["local", "slurm"]),
+    default="local",
+    show_default=True,
+    help="Dask cluster backend to use when Dask reading is selected.",
+)
+@click.option(
+    "--load-big-fits",
+    is_flag=True,
+    help="Allow loading FITS files above the size threshold fully into memory.",
+)
+def inspect(
+    config,
+    input_path,
+    survey_name,
+    fits_hdu,
+    unique_limit,
+    column_names,
+    column_names_list,
+    dask_threshold_mb,
+    dask_cluster,
+    load_big_fits,
+):
     """Run inspection using CONFIG YAML or default settings from --path."""
     if bool(config) == bool(input_path):
         raise click.UsageError("Provide exactly one of CONFIG or --path.")
 
     if config:
-        outdir = rc_inspect.run_inspect(Path(config))
+        cfg = rc_inspect.load_config(Path(config))
+        cfg.setdefault("dask_threshold_mb", dask_threshold_mb)
+        cfg.setdefault("dask_cluster", {"name": dask_cluster})
+        if load_big_fits:
+            cfg["load_big_fits"] = True
+        outdir = rc_inspect.run_inspect_config(cfg)
     else:
         path = Path(input_path)
         cfg = {
@@ -62,6 +96,9 @@ def inspect(config, input_path, survey_name, fits_hdu, unique_limit, column_name
             "survey_name": survey_name or path.stem,
             "fits_hdu": fits_hdu,
             "unique_limit": unique_limit,
+            "dask_threshold_mb": dask_threshold_mb,
+            "dask_cluster": {"name": dask_cluster},
+            "load_big_fits": load_big_fits,
         }
         parsed_column_names = _parse_column_names_options(column_names, column_names_list)
         if parsed_column_names:

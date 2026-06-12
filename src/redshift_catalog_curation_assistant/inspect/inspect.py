@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from ..io import DEFAULT_DASK_THRESHOLD_BYTES
+
 PATTERNS = {
     "ra": [r"^ra$", r"ra_deg", r"target_ra", r"obsra", r"ra_j2000", r"alpha", r"right_ascension"],
     "dec": [r"^dec$", r"dec_deg", r"target_dec", r"obsdec", r"dec_j2000", r"declination"],
@@ -46,10 +48,40 @@ def candidate_columns(columns: list[str], patterns: dict[str, list[str]]) -> dic
     return matches
 
 
-def gather_stats(df: pd.DataFrame) -> dict[str, dict[str, float | int]]:
+def _is_dask_dataframe(df: Any) -> bool:
+    return df.__class__.__module__.startswith("dask.dataframe")
+
+
+def _compute_if_needed(value: Any) -> Any:
+    if hasattr(value, "compute"):
+        return value.compute()
+    return value
+
+
+def _head(df: pd.DataFrame | Any, n_rows: int) -> pd.DataFrame:
+    if _is_dask_dataframe(df):
+        return df.head(n_rows, npartitions=-1)
+    return df.head(n_rows)
+
+
+def gather_stats(df: pd.DataFrame | Any) -> dict[str, dict[str, float | int]]:
     """Collect simple numeric statistics for a DataFrame."""
     stats: dict[str, dict[str, float | int]] = {}
     numeric = df.select_dtypes(include="number")
+    if _is_dask_dataframe(df):
+        if len(numeric.columns) == 0:
+            return stats
+        for col in numeric.columns:
+            series = numeric[col]
+            stats[col] = {
+                "count": int(series.count().compute()),
+                "mean": float(series.mean().compute()),
+                "std": float(series.std().compute()),
+                "min": float(series.min().compute()),
+                "max": float(series.max().compute()),
+            }
+        return stats
+
     for col in numeric.columns:
         stats[col] = {
             "count": int(numeric[col].count()),
@@ -61,12 +93,12 @@ def gather_stats(df: pd.DataFrame) -> dict[str, dict[str, float | int]]:
     return stats
 
 
-def gather_categorical_uniques(df: pd.DataFrame, limit: int = 10) -> dict[str, list[str]]:
+def gather_categorical_uniques(df: pd.DataFrame | Any, limit: int = 10) -> dict[str, list[str]]:
     """Collect bounded unique values for non-numeric columns."""
     uniques = {}
     categorical = df.select_dtypes(exclude="number")
     for col in categorical.columns:
-        values = categorical[col].dropna().astype(str).unique()
+        values = _compute_if_needed(categorical[col].dropna().astype(str).unique())
         uniques[col] = values[:limit].tolist()
     return uniques
 
@@ -91,20 +123,33 @@ def json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def run_inspect_config(config: dict[str, Any]) -> Path:
-    """Run catalog inspection from a loaded config and write reports."""
-    cfg = config
-    input_path = Path(cfg["input_file"])
-    survey = cfg.get("survey_name", input_path.stem)
-    outdir = Path("reports") / survey
-    outdir.mkdir(parents=True, exist_ok=True)
+def _dask_threshold_bytes(config: dict[str, Any]) -> int | None:
+    threshold_mb = config.get("dask_threshold_mb", DEFAULT_DASK_THRESHOLD_BYTES / (1024 * 1024))
+    if threshold_mb is None:
+        return None
+    threshold_mb = float(threshold_mb)
+    if threshold_mb <= 0:
+        return None
+    return int(threshold_mb * 1024 * 1024)
 
-    from .io import read_table
 
-    df = read_table(input_path, fits_hdu=cfg.get("fits_hdu", 1), column_names=cfg.get("column_names"))
-    patterns = build_patterns(cfg)
+def _dask_logs_dir(cluster_config: dict[str, Any], outdir: Path) -> Path | None:
+    logs_dir = cluster_config.get("logs_dir")
+    if logs_dir:
+        return Path(logs_dir)
+    if cluster_config.get("name") == "slurm":
+        return outdir / "dask-logs"
+    return None
 
-    report = {
+
+def _build_report(
+    input_path: Path, survey: str, df: pd.DataFrame | Any, config: dict[str, Any]
+) -> dict[str, Any]:
+    patterns = build_patterns(config)
+    sample = _head(df, 5)
+    sample = _compute_if_needed(sample)
+
+    return {
         "survey": survey,
         "input_file": str(input_path),
         "n_rows": int(len(df)),
@@ -113,10 +158,38 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
         "dtypes": {c: str(t) for c, t in df.dtypes.items()},
         "candidates": candidate_columns(list(df.columns), patterns),
         "numeric_stats": gather_stats(df),
-        "categorical_uniques": gather_categorical_uniques(df, limit=int(cfg.get("unique_limit", 10))),
-        "sample": df.head(5).to_dict(orient="records"),
+        "categorical_uniques": gather_categorical_uniques(df, limit=int(config.get("unique_limit", 10))),
+        "sample": sample.to_dict(orient="records"),
         "warnings": [],
     }
+
+
+def run_inspect_config(config: dict[str, Any]) -> Path:
+    """Run catalog inspection from a loaded config and write reports."""
+    cfg = config
+    input_path = Path(cfg["input_file"])
+    survey = cfg.get("survey_name", input_path.stem)
+    outdir = Path("reports") / survey
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    from ..io import read_table
+
+    df = read_table(
+        input_path,
+        fits_hdu=cfg.get("fits_hdu", 1),
+        column_names=cfg.get("column_names"),
+        dask_threshold_bytes=_dask_threshold_bytes(cfg),
+        load_big_fits=bool(cfg.get("load_big_fits", False)),
+    )
+
+    if _is_dask_dataframe(df):
+        from ..executor import dask_client_context, dask_cluster_config
+
+        cluster_config = dask_cluster_config(cfg)
+        with dask_client_context(cluster_config, logs_dir=_dask_logs_dir(cluster_config, outdir)):
+            report = _build_report(input_path, survey, df, cfg)
+    else:
+        report = _build_report(input_path, survey, df, cfg)
 
     (outdir / "inspect_report.json").write_text(json.dumps(report, indent=2, default=json_default))
     md = [f"# Inspect report: {survey}\n"]

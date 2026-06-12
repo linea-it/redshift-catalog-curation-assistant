@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from click.testing import CliRunner
 
 from redshift_catalog_curation_assistant.cli import cli
@@ -14,6 +16,14 @@ def test_cli_help():
     assert "qa" in result.output
     assert "validate-flags" in result.output
     assert "run" in result.output
+
+
+def test_inspect_help():
+    """Ensure the inspect command exposes inspection-specific options."""
+    result = CliRunner().invoke(cli, ["inspect", "--help"])
+
+    assert result.exit_code == 0
+    assert "--load-big-fits" in result.output
 
 
 def test_version_command():
@@ -35,6 +45,30 @@ def test_inspect_path_command(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "reports/PATH_SAMPLE" in result.output
     assert (tmp_path / "reports" / "PATH_SAMPLE" / "inspect_report.json").exists()
+
+
+def test_inspect_path_accepts_partitioned_parquet_directory(tmp_path, monkeypatch):
+    """Ensure inspect --path accepts partitioned Parquet directories."""
+    import pandas as pd
+
+    import redshift_catalog_curation_assistant.executor as dex
+
+    monkeypatch.chdir(tmp_path)
+    parquet_dir = tmp_path / "sample.parquet"
+    parquet_dir.mkdir()
+    pd.DataFrame({"object_id": [1], "z": [0.1]}).to_parquet(parquet_dir / "part000.parquet")
+    pd.DataFrame({"object_id": [2], "z": [0.2]}).to_parquet(parquet_dir / "part001.parquet")
+
+    @contextmanager
+    def fake_dask_client_context(cluster_config, logs_dir=None):
+        yield
+
+    monkeypatch.setattr(dex, "dask_client_context", fake_dask_client_context)
+
+    result = CliRunner().invoke(cli, ["inspect", "--path", str(parquet_dir), "--survey-name", "PARQUET_DIR"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / "reports" / "PARQUET_DIR" / "inspect_report.json").exists()
 
 
 def test_inspect_rejects_config_and_path(tmp_path):

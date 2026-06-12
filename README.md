@@ -76,12 +76,55 @@ For FITS catalogs, inspect the HDU structure before choosing `fits_hdu`:
 redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
 ```
 
+Large FITS files at or above the configured threshold are blocked by default
+because the current FITS path loads the selected HDU into memory with astropy
+and pandas. To keep that behavior explicitly, pass `--load-big-fits` or set
+`load_big_fits: true` in YAML. For repeated work on large FITS catalogs, prefer
+converting FITS to Parquet once and running later pipeline steps on the Parquet
+data.
+
 For quick inspection without writing a YAML config first, use defaults from the
 input path:
 
 ```bash
 redshift-curator inspect --path tests/data/raw/6dfgs_sample.csv.gz
 redshift-curator inspect --path tests/data/raw/desi_deep_pilot_sample.fits --fits-hdu 1
+```
+
+For supported non-FITS tabular formats, files at or above 100 MB are read with
+Dask by default. Dask uses a local cluster with 2 workers, 1 thread per worker,
+and 1 GB per worker unless configured otherwise. Tune the threshold with
+`--dask-threshold-mb` or with `dask_threshold_mb` in YAML; use `0` to disable
+Dask:
+
+```bash
+redshift-curator inspect --path large_catalog.csv --dask-threshold-mb 250
+```
+
+Partitioned Parquet datasets are also accepted as input directories and are
+always read with Dask:
+
+```bash
+redshift-curator inspect --path converted_catalog.parquet
+```
+
+Advanced users can configure the cluster in YAML:
+
+```yaml
+dask_threshold_mb: 250
+dask_cluster:
+  name: slurm
+  logs_dir: reports/slurm-logs
+  args:
+    instance:
+      cores: 4
+      processes: 2
+      memory: 8GB
+      queue: debug
+      account: my-account
+    scale:
+      minimum_jobs: 1
+      maximum_jobs: 4
 ```
 
 For headerless whitespace files, pass column names explicitly. Short schemas can
