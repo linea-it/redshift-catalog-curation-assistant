@@ -127,6 +127,17 @@ dask_cluster:
       maximum_jobs: 4
 ```
 
+The same executor schema can be passed through the CLI with `--dask-cluster`,
+although YAML is usually easier to review. SLURM clusters must be passed as a
+full dict with `args`; `--dask-cluster slurm` is intentionally rejected. SLURM
+configs require `args.instance.cores`, `args.instance.memory`, and
+`args.scale.minimum_jobs > 0`:
+
+```bash
+redshift-curator inspect --path large_catalog.parquet \
+  --dask-cluster '{"name": "slurm", "logs_dir": "reports/slurm-logs", "args": {"instance": {"cores": 4, "processes": 1, "memory": "16GB", "queue": "cpu_bpglsst", "account": "hpc-bpglsst", "interface": "ib0"}, "scale": {"minimum_jobs": 1, "maximum_jobs": 4}}}'
+```
+
 For headerless whitespace files, pass column names explicitly. Short schemas can
 use `--column-names`; longer schemas are usually easier to review in YAML:
 

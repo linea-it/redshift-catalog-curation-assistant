@@ -19,6 +19,10 @@ DEFAULT_DASK_CLUSTER_CONFIG: dict[str, Any] = {
 }
 
 
+class DaskClusterConfigError(ValueError):
+    """Raised when Dask executor configuration is incomplete."""
+
+
 def dask_cluster_config(config: dict[str, Any]) -> dict[str, Any]:
     """Return the configured Dask cluster settings with local defaults."""
     configured = config.get("dask_cluster")
@@ -36,7 +40,35 @@ def dask_cluster_config(config: dict[str, Any]) -> dict[str, Any]:
         cluster_config["args"] = args
     else:
         cluster_config["args"] = dict(cluster_config.get("args", {}) or {})
+    _validate_dask_cluster_config(cluster_config)
     return cluster_config
+
+
+def _validate_dask_cluster_config(cluster_config: dict[str, Any]) -> None:
+    if str(cluster_config.get("name", "local")).lower() != "slurm":
+        return
+
+    args = dict(cluster_config.get("args", {}) or {})
+    instance_cfg = dict(args.get("instance", {}) or {})
+    scale_cfg = dict(args.get("scale", {}) or {})
+    missing = []
+    if not instance_cfg:
+        missing.append("args.instance")
+    if "cores" not in instance_cfg:
+        missing.append("args.instance.cores")
+    if "memory" not in instance_cfg:
+        missing.append("args.instance.memory")
+    if int(scale_cfg.get("minimum_jobs", 0) or 0) <= 0:
+        missing.append("args.scale.minimum_jobs")
+
+    if missing:
+        msg = (
+            "SLURM Dask clusters require a complete dask_cluster config. "
+            f"Missing or invalid: {', '.join(missing)}. "
+            "Provide args.instance with at least cores and memory, plus "
+            "args.scale.minimum_jobs > 0."
+        )
+        raise DaskClusterConfigError(msg)
 
 
 def create_dask_cluster(cluster_config: dict[str, Any], logs_dir: Path | None = None) -> Any:

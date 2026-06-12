@@ -56,10 +56,9 @@ def cli():
 )
 @click.option(
     "--dask-cluster",
-    type=click.Choice(["local", "slurm"]),
     default="local",
     show_default=True,
-    help="Dask cluster backend to use when Dask reading is selected.",
+    help="Dask cluster config: 'local' or a JSON/Python dict matching the executor schema.",
 )
 @click.option(
     "--load-big-fits",
@@ -85,7 +84,7 @@ def inspect(
     if config:
         cfg = rc_inspect.load_config(Path(config))
         cfg.setdefault("dask_threshold_mb", dask_threshold_mb)
-        cfg.setdefault("dask_cluster", {"name": dask_cluster})
+        cfg.setdefault("dask_cluster", _parse_dask_cluster_option(dask_cluster))
         if load_big_fits:
             cfg["load_big_fits"] = True
         outdir = rc_inspect.run_inspect_config(cfg)
@@ -97,7 +96,7 @@ def inspect(
             "fits_hdu": fits_hdu,
             "unique_limit": unique_limit,
             "dask_threshold_mb": dask_threshold_mb,
-            "dask_cluster": {"name": dask_cluster},
+            "dask_cluster": _parse_dask_cluster_option(dask_cluster),
             "load_big_fits": load_big_fits,
         }
         parsed_column_names = _parse_column_names_options(column_names, column_names_list)
@@ -123,6 +122,23 @@ def _parse_column_names_options(column_names: tuple[str, ...], column_names_list
     if not isinstance(parsed, list | tuple) or not all(isinstance(value, str) for value in parsed):
         raise click.BadParameter('Expected a list of strings, e.g. \'["RA", "Dec", "z"]\'.')
     return [value.strip() for value in parsed if value.strip()]
+
+
+def _parse_dask_cluster_option(value: str) -> dict:
+    value = value.strip()
+    if value == "local":
+        return {"name": value}
+    if value == "slurm":
+        raise click.BadParameter("SLURM Dask clusters require a dict literal with args for --dask-cluster.")
+
+    try:
+        parsed = ast.literal_eval(value)
+    except (SyntaxError, ValueError) as exc:
+        raise click.BadParameter("Expected 'local' or a dict literal for --dask-cluster.") from exc
+
+    if not isinstance(parsed, dict):
+        raise click.BadParameter("Expected 'local' or a dict literal for --dask-cluster.")
+    return parsed
 
 
 @cli.command("inspect-fits")

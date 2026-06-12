@@ -1,4 +1,6 @@
-from redshift_catalog_curation_assistant.executor import dask_cluster_config
+import pytest
+
+from redshift_catalog_curation_assistant.executor import DaskClusterConfigError, dask_cluster_config
 
 
 def test_dask_cluster_config_defaults_to_small_local_cluster():
@@ -45,3 +47,28 @@ def test_dask_cluster_config_preserves_slurm_sections():
     config = dask_cluster_config({"dask_cluster": cluster})
 
     assert config == cluster
+
+
+def test_dask_cluster_config_rejects_incomplete_slurm_config():
+    """Ensure SLURM configs fail before creating an unusable cluster."""
+    with pytest.raises(DaskClusterConfigError, match="args.instance.*args.scale.minimum_jobs"):
+        dask_cluster_config({"dask_cluster": {"name": "slurm"}})
+
+
+def test_dask_cluster_config_rejects_slurm_without_initial_jobs():
+    """Ensure SLURM configs require at least one initial job."""
+    cluster = {
+        "name": "slurm",
+        "args": {
+            "instance": {
+                "cores": 4,
+                "memory": "8GB",
+            },
+            "scale": {
+                "minimum_jobs": 0,
+            },
+        },
+    }
+
+    with pytest.raises(DaskClusterConfigError, match="args.scale.minimum_jobs"):
+        dask_cluster_config({"dask_cluster": cluster})

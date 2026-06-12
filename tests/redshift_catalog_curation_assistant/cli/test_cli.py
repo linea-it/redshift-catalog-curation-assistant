@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -69,6 +70,84 @@ def test_inspect_path_accepts_partitioned_parquet_directory(tmp_path, monkeypatc
 
     assert result.exit_code == 0
     assert (tmp_path / "reports" / "PARQUET_DIR" / "inspect_report.json").exists()
+
+
+def test_inspect_path_accepts_dask_cluster_dict(tmp_path, monkeypatch):
+    """Ensure --dask-cluster accepts the executor config schema as a dict literal."""
+    import pandas as pd
+
+    import redshift_catalog_curation_assistant.executor as dex
+
+    monkeypatch.chdir(tmp_path)
+    parquet_dir = tmp_path / "sample.parquet"
+    parquet_dir.mkdir()
+    pd.DataFrame({"object_id": [1], "z": [0.1]}).to_parquet(parquet_dir / "part000.parquet")
+
+    client_calls = []
+
+    @contextmanager
+    def fake_dask_client_context(cluster_config, logs_dir=None):
+        client_calls.append((cluster_config, logs_dir))
+        yield
+
+    monkeypatch.setattr(dex, "dask_client_context", fake_dask_client_context)
+
+    cluster_config = (
+        "{'name': 'local', 'logs_dir': 'reports/dask-logs', "
+        "'args': {'n_workers': 1, 'threads_per_worker': 1, 'processes': False}}"
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "inspect",
+            "--path",
+            str(parquet_dir),
+            "--survey-name",
+            "PARQUET_CLUSTER",
+            "--dask-cluster",
+            cluster_config,
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert client_calls == [
+        (
+            {
+                "name": "local",
+                "logs_dir": "reports/dask-logs",
+                "args": {
+                    "n_workers": 1,
+                    "threads_per_worker": 1,
+                    "memory_limit": "1GB",
+                    "dashboard_address": None,
+                    "processes": False,
+                },
+            },
+            Path("reports/dask-logs"),
+        )
+    ]
+
+
+def test_inspect_rejects_invalid_dask_cluster_option(tmp_path):
+    """Ensure invalid --dask-cluster values fail before running inspect."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    result = CliRunner().invoke(cli, ["inspect", "--path", str(csv), "--dask-cluster", "not-a-dict"])
+
+    assert result.exit_code != 0
+    assert "Expected 'local' or a dict literal" in result.output
+
+
+def test_inspect_rejects_simple_slurm_dask_cluster_option(tmp_path):
+    """Ensure SLURM requires explicit executor args when set from CLI."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    result = CliRunner().invoke(cli, ["inspect", "--path", str(csv), "--dask-cluster", "slurm"])
+
+    assert result.exit_code != 0
+    assert "SLURM Dask clusters require a dict literal with args" in result.output
 
 
 def test_inspect_rejects_config_and_path(tmp_path):
