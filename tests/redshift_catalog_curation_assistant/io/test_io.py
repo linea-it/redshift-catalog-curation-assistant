@@ -8,7 +8,7 @@ def test_headerless_file_requires_column_names(tmp_path):
     path = tmp_path / "sample.idz"
     path.write_text("1 2 TGS436Z001 0.2981 4\n")
 
-    with pytest.raises(ValueError, match="column_names.*exactly 5 entries"):
+    with pytest.raises(ValueError, match="exactly 5 column names.*--column-name/--column-names"):
         read_table(path)
 
 
@@ -17,7 +17,7 @@ def test_headerless_file_validates_column_name_count(tmp_path):
     path = tmp_path / "sample.dat"
     path.write_text("10.0 -1.0 0.2\n")
 
-    with pytest.raises(ValueError, match="2 entries.*3 columns"):
+    with pytest.raises(ValueError, match="2 entries.*3 columns.*--column-name/--column-names"):
         read_table(path, column_names=["ra", "dec"])
 
 

@@ -38,6 +38,19 @@ def cli():
     help="Maximum unique categorical values to report.",
 )
 @click.option(
+    "--stats-mode",
+    type=click.Choice(["candidates", "all", "none"], case_sensitive=False),
+    default="candidates",
+    show_default=True,
+    help="Columns to use for statistics.",
+)
+@click.option(
+    "--sample-max-columns",
+    default=100,
+    show_default=True,
+    help="Maximum number of columns to include in sample rows.",
+)
+@click.option(
     "--column-name",
     "column_names",
     multiple=True,
@@ -77,6 +90,8 @@ def inspect(
     survey_name,
     fits_hdu,
     unique_limit,
+    stats_mode,
+    sample_max_columns,
     column_names,
     column_names_list,
     column_selection,
@@ -90,6 +105,8 @@ def inspect(
 
     if config:
         cfg = rc_inspect.load_config(Path(config))
+        cfg.setdefault("stats_mode", stats_mode)
+        cfg.setdefault("sample_max_columns", sample_max_columns)
         cfg.setdefault("dask_threshold_mb", dask_threshold_mb)
         cfg.setdefault("dask_cluster", _parse_dask_cluster_option(dask_cluster))
     else:
@@ -99,6 +116,8 @@ def inspect(
             "survey_name": survey_name or path.stem,
             "fits_hdu": fits_hdu,
             "unique_limit": unique_limit,
+            "stats_mode": stats_mode,
+            "sample_max_columns": sample_max_columns,
             "dask_threshold_mb": dask_threshold_mb,
             "dask_cluster": _parse_dask_cluster_option(dask_cluster),
         }

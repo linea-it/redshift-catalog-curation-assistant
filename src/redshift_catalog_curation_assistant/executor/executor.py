@@ -50,7 +50,8 @@ def _validate_dask_cluster_config(cluster_config: dict[str, Any]) -> None:
     if executor_name not in SUPPORTED_DASK_EXECUTORS:
         msg = (
             f"Unsupported Dask executor: {cluster_config.get('name')!r}. "
-            f"Supported executors are: {', '.join(sorted(SUPPORTED_DASK_EXECUTORS))}."
+            f"Supported executors are: {', '.join(sorted(SUPPORTED_DASK_EXECUTORS))}. "
+            "Set 'dask_cluster' in YAML, or pass a dict with --dask-cluster in the CLI."
         )
         raise DaskClusterConfigError(msg)
 
@@ -72,10 +73,11 @@ def _validate_dask_cluster_config(cluster_config: dict[str, Any]) -> None:
 
     if missing:
         msg = (
-            "SLURM Dask clusters require a complete dask_cluster config. "
+            "SLURM Dask clusters require complete dask_cluster settings. "
             f"Missing or invalid: {', '.join(missing)}. "
             "Provide args.instance with at least cores and memory, plus "
-            "args.scale.minimum_jobs > 0."
+            "args.scale.minimum_jobs > 0. Set 'dask_cluster' in YAML, or pass a dict "
+            "with --dask-cluster in the CLI."
         )
         raise DaskClusterConfigError(msg)
 
@@ -144,7 +146,8 @@ def create_dask_cluster(cluster_config: dict[str, Any], logs_dir: Path | None = 
 
     msg = (
         f"Unsupported Dask executor: {cluster_config.get('name')!r}. "
-        f"Supported executors are: {', '.join(sorted(SUPPORTED_DASK_EXECUTORS))}."
+        f"Supported executors are: {', '.join(sorted(SUPPORTED_DASK_EXECUTORS))}. "
+        "Set 'dask_cluster' in YAML, or pass a dict with --dask-cluster in the CLI."
     )
     raise DaskClusterConfigError(msg)
 

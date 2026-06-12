@@ -45,14 +45,14 @@ def _read_headerless_table(path: Path, column_names: list[str] | None, use_dask:
     detected_columns = pd.read_csv(path, sep=r"\s+", comment="#", header=None, nrows=1).shape[1]
     if not column_names:
         msg = (
-            f"{path} does not contain column names. Provide a 'column_names' list in the YAML "
-            f"with exactly {detected_columns} entries to read this file."
+            f"{path} does not contain column names. Provide exactly {detected_columns} column names "
+            "with 'column_names' in YAML, or with --column-name/--column-names in the CLI."
         )
         raise ValueError(msg)
     if len(column_names) != detected_columns:
         msg = (
-            f"Configured column_names has {len(column_names)} entries, but {path} has "
-            f"{detected_columns} columns."
+            f"column_names has {len(column_names)} entries, but {path} has {detected_columns} columns. "
+            "Update 'column_names' in YAML, or --column-name/--column-names in the CLI."
         )
         raise ValueError(msg)
 

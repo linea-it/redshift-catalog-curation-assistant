@@ -126,7 +126,10 @@ def _column_selection(config: dict[str, Any]) -> list[str] | None:
     if selection is None:
         return None
     if not isinstance(selection, list | tuple) or not all(isinstance(value, str) for value in selection):
-        msg = "column_selection must be a list of column names."
+        msg = (
+            "column_selection must be a list of column names. Set 'column_selection' in YAML, "
+            "or pass --column-selection/--column-selection-list in the CLI."
+        )
         raise ValueError(msg)
     return _ordered_unique(value.strip() for value in selection if value.strip())
 
@@ -139,7 +142,11 @@ def _selected_report_columns(columns: list[str], config: dict[str, Any]) -> tupl
     available = set(columns)
     missing = [column for column in selection if column not in available]
     if missing:
-        msg = "column_selection contains columns not present in input: " + ", ".join(missing)
+        msg = (
+            "column_selection contains columns not present in input: "
+            + ", ".join(missing)
+            + ". Update 'column_selection' in YAML, or --column-selection/--column-selection-list in the CLI."
+        )
         raise ValueError(msg)
 
     return selection, [
@@ -150,7 +157,10 @@ def _selected_report_columns(columns: list[str], config: dict[str, Any]) -> tupl
 def _stats_mode(config: dict[str, Any]) -> str:
     stats_mode = str(config.get("stats_mode", "candidates")).lower()
     if stats_mode not in STATS_MODES:
-        msg = "stats_mode must be one of: candidates, all, none."
+        msg = (
+            "stats_mode must be one of: candidates, all, none. Set 'stats_mode' in YAML, "
+            "or pass --stats-mode in the CLI."
+        )
         raise ValueError(msg)
     return stats_mode
 
@@ -366,13 +376,13 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
     if len(sample_columns) < len(columns):
         warnings.append(
             f"Parquet sample was limited to {len(sample_columns)} of {len(columns)} columns. "
-            "Increase sample_max_columns to include more columns."
+            "Increase 'sample_max_columns' in YAML, or pass --sample-max-columns in the CLI."
         )
     sample = _parquet_to_pandas(dataset, sample_columns, limit=5) if sample_columns else pd.DataFrame()
 
     batch_size = int(config.get("parquet_stats_batch_size", PARQUET_STATS_BATCH_SIZE))
     if batch_size <= 0:
-        msg = "parquet_stats_batch_size must be greater than zero."
+        msg = "parquet_stats_batch_size must be greater than zero. This option is available in YAML config."
         raise ValueError(msg)
 
     numeric_cols, categorical_cols, stats_warnings = _parquet_stats_columns(
@@ -515,7 +525,7 @@ def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) ->
         if len(sample_columns) < len(columns):
             warnings.append(
                 f"FITS sample was limited to {len(sample_columns)} of {len(columns)} columns. "
-                "Increase sample_max_columns to include more columns."
+                "Increase 'sample_max_columns' in YAML, or pass --sample-max-columns in the CLI."
             )
 
         numeric_cols, categorical_cols, stats_warnings = _selected_stats_columns(
@@ -542,7 +552,7 @@ def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) ->
 
         batch_size = int(config.get("fits_stats_batch_size", FITS_STATS_BATCH_SIZE))
         if batch_size <= 0:
-            msg = "fits_stats_batch_size must be greater than zero."
+            msg = "fits_stats_batch_size must be greater than zero. This option is available in YAML config."
             raise ValueError(msg)
 
         return {
@@ -619,7 +629,7 @@ def _build_report(
     if len(sample_columns) < len(columns):
         warnings.append(
             f"Sample was limited to {len(sample_columns)} of {len(columns)} columns. "
-            "Increase sample_max_columns to include more columns."
+            "Increase 'sample_max_columns' in YAML, or pass --sample-max-columns in the CLI."
         )
     sample_input = report_df[sample_columns] if sample_columns else report_df[[]]
     sample = _head(sample_input, 5)

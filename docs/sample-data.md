@@ -30,8 +30,9 @@ Versioned fixtures:
 - `tests/data/raw/6dfgs_sample.csv.gz`: CSV header plus first 1000 rows from the
   6dFGS file.
 
-Catalogs without column names can be read only when the YAML config provides an
-explicit `column_names` list. The list must have exactly the same number of
+Catalogs without column names can be read only when explicit column names are
+provided, either with `column_names` in YAML or with `--column-name`/
+`--column-names` in the CLI. The list must have exactly the same number of
 entries as the file has columns. This is required for the 2dFGRS and 2dFLenS
 fixtures, and those names should be treated as user-supplied scientific
 metadata.

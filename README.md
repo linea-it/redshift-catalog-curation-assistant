@@ -166,6 +166,9 @@ redshift-curator inspect --path catalog.fits \
 
 redshift-curator inspect --path catalog.fits \
   --column-selection-list '["RA", "DEC", "Z"]'
+
+redshift-curator inspect --path catalog.fits \
+  --stats-mode none --sample-max-columns 25
 ```
 
 ## Development
@@ -186,8 +189,9 @@ Synthetic data in this repository is clearly named synthetic and is not
 associated with any real survey. Real survey names are used only for real source
 catalogs or local samples derived from those catalogs.
 
-Files without embedded column names require a `column_names` list in the YAML
-config. That list is user-supplied metadata and must match the number of columns
-in the file. Files that already include column names ignore `column_names`.
+Files without embedded column names require explicit column names, either with
+`column_names` in YAML or with `--column-name`/`--column-names` in the CLI. That
+list is user-supplied metadata and must match the number of columns in the file.
+Files that already include column names ignore `column_names`.
 
 See `docs/sample-data.md` for the current local sample-data convention.

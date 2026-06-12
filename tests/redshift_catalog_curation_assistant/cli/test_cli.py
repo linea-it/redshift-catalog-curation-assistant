@@ -25,6 +25,8 @@ def test_inspect_help():
 
     assert result.exit_code == 0
     assert "--fits-hdu" in result.output
+    assert "--stats-mode" in result.output
+    assert "--sample-max-columns" in result.output
 
 
 def test_inspect_fits_reports_large_compressed_file_error(tmp_path, monkeypatch):
@@ -261,6 +263,35 @@ def test_inspect_path_accepts_column_selection(tmp_path, monkeypatch):
     assert "object_id" not in report["numeric_stats"]
 
 
+def test_inspect_path_accepts_stats_mode_and_sample_max_columns(tmp_path, monkeypatch):
+    """Ensure inspect --path can control stats and sample column count."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z,extra\n1,10.0,-1.0,0.1,5\n2,11.0,-1.1,0.2,6\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "inspect",
+            "--path",
+            str(csv),
+            "--survey-name",
+            "CLI_LIMITS",
+            "--stats-mode",
+            "none",
+            "--sample-max-columns",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    report = json.loads((tmp_path / "reports" / "CLI_LIMITS" / "inspect_report.json").read_text())
+    assert len(report["sample"][0]) == 2
+    assert report["numeric_stats"] == {}
+    assert report["categorical_uniques"] == {}
+    assert "Tabular statistics were skipped because stats_mode='none'." in report["warnings"]
+
+
 def test_inspect_path_accepts_column_selection_list(tmp_path, monkeypatch):
     """Ensure inspect --path can limit reports with --column-selection-list."""
     monkeypatch.chdir(tmp_path)
@@ -322,6 +353,7 @@ def test_inspect_rejects_missing_column_selection(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "column_selection contains columns not present in input: missing" in result.output
+    assert "--column-selection/--column-selection-list" in result.output
 
 
 def test_inspect_rejects_mixed_column_name_options(tmp_path):
