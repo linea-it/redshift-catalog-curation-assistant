@@ -1,6 +1,6 @@
 import pytest
 
-from redshift_catalog_curation_assistant.io import LargeFitsError, _should_use_dask, read_table
+from redshift_catalog_curation_assistant.io import _should_use_dask, read_table
 
 
 def test_headerless_file_requires_column_names(tmp_path):
@@ -125,27 +125,15 @@ def test_read_table_rejects_non_parquet_directory(tmp_path):
         read_table(path)
 
 
-def test_large_fits_requires_explicit_opt_in(tmp_path):
-    """Ensure large FITS files fail before loading the table into memory."""
+def test_read_table_can_load_fits_regardless_of_dask_threshold(tmp_path):
+    """Ensure FITS reading remains available for callers that need a DataFrame."""
     from astropy.io import fits
     from astropy.table import Table
 
     path = tmp_path / "sample.fits"
     fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(Table({"z": [0.1]}), name="CATALOG")]).writeto(path)
 
-    with pytest.raises(LargeFitsError, match="--load-big-fits"):
-        read_table(path, dask_threshold_bytes=0)
-
-
-def test_large_fits_can_be_loaded_with_explicit_opt_in(tmp_path):
-    """Ensure users can explicitly keep the legacy in-memory FITS behavior."""
-    from astropy.io import fits
-    from astropy.table import Table
-
-    path = tmp_path / "sample.fits"
-    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(Table({"z": [0.1]}), name="CATALOG")]).writeto(path)
-
-    df = read_table(path, dask_threshold_bytes=0, load_big_fits=True)
+    df = read_table(path, dask_threshold_bytes=0)
 
     assert list(df.columns) == ["z"]
     assert len(df) == 1

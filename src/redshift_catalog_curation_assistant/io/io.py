@@ -8,10 +8,6 @@ HEADERLESS_SUFFIXES = {".dat", ".idz"}
 DEFAULT_DASK_THRESHOLD_BYTES = 100 * 1024 * 1024
 
 
-class LargeFitsError(ValueError):
-    """Raised when reading a large FITS file without explicit opt-in."""
-
-
 def _should_use_dask(path: Path, threshold_bytes: int | None) -> bool:
     if threshold_bytes is None:
         return False
@@ -74,7 +70,6 @@ def read_table(
     fits_hdu: int | None = 1,
     column_names: list[str] | None = None,
     dask_threshold_bytes: int | None = DEFAULT_DASK_THRESHOLD_BYTES,
-    load_big_fits: bool = False,
 ) -> pd.DataFrame | Any:
     """Read a supported catalog file into a DataFrame."""
     path = Path(path)
@@ -104,20 +99,6 @@ def read_table(
             return dd.read_parquet(str(path))
         return pd.read_parquet(path)
     if suffix in [".fits"]:
-        if not load_big_fits and _should_use_dask(path, dask_threshold_bytes):
-            threshold_mb = dask_threshold_bytes / (1024 * 1024) if dask_threshold_bytes is not None else 0
-            msg = (
-                f"FITS file is larger than the configured threshold ({threshold_mb:g} MB): {path}\n\n"
-                "Reading large FITS files currently loads the selected HDU into memory with astropy "
-                "and pandas. To continue anyway, pass --load-big-fits or set load_big_fits: true "
-                "in the YAML config.\n\n"
-                "Recommended workflow:\n"
-                f"  1. redshift-curator inspect-fits {path}\n"
-                f"  2. redshift-curator convert-fits {path} output.parquet --fits-hdu {fits_hdu}\n"
-                "  3. redshift-curator inspect --path output.parquet"
-            )
-            raise LargeFitsError(msg)
-
         from astropy.table import Table
 
         table = Table.read(str(path), hdu=fits_hdu)

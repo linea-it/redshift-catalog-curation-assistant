@@ -9,7 +9,7 @@ import pytest
 
 def test_default_patterns_cover_common_sample_columns():
     """Verify default patterns cover reusable column names without broad DEC false positives."""
-    import redshift_catalog_curation_assistant.inspect as insp
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
 
     matches = insp.candidate_columns(
         [
@@ -17,8 +17,13 @@ def test_default_patterns_cover_common_sample_columns():
             "OBSDEC",
             "ra_j2000_h",
             "dec_j2000_d",
+            "Alpha_J2000",
+            "Delta_J2000",
             "z_helio",
             "qual",
+            "ZWARN",
+            "ZWARNING",
+            "ZWARNING_NOQSO",
             "ETA_TYPE",
             "MEAN_DELTA_X",
             "lines_spe_rank_rank0_halpha",
@@ -29,10 +34,10 @@ def test_default_patterns_cover_common_sample_columns():
         insp.PATTERNS,
     )
 
-    assert matches["ra"] == ["OBSRA", "ra_j2000_h"]
-    assert matches["dec"] == ["OBSDEC", "dec_j2000_d"]
+    assert matches["ra"] == ["OBSRA", "ra_j2000_h", "Alpha_J2000"]
+    assert matches["dec"] == ["OBSDEC", "dec_j2000_d", "Delta_J2000"]
     assert matches["redshift"] == ["z_helio"]
-    assert matches["quality"] == ["qual"]
+    assert matches["quality"] == ["qual", "ZWARN", "ZWARNING", "ZWARNING_NOQSO"]
     assert matches["redshift_error"] == []
     assert matches["id"] == []
     assert matches["object_type"] == ["ETA_TYPE"]
@@ -49,7 +54,7 @@ def test_inspect_sample(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     # Run inspect
-    import redshift_catalog_curation_assistant.inspect as insp
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
 
     outdir = insp.run_inspect(cfg)
 
@@ -74,6 +79,7 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
     cfg.write_text(
         f"input_file: {csv}\n"
         "survey_name: TEST_DASK\n"
+        "stats_mode: all\n"
         "dask_threshold_mb: 0.000001\n"
         "dask_cluster:\n"
         "  name: local\n"
@@ -165,6 +171,29 @@ def test_gather_stats_reports_null_counts_without_nan_values():
     }
 
 
+def test_inspect_csv_defaults_to_candidate_stats(tmp_path, monkeypatch):
+    """Verify generic inspect controls apply outside the Parquet path."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "wide.csv"
+    csv.write_text(
+        "object_id,ra,dec,z,extra_0,extra_1,extra_2\n" "1,10.0,-1.0,0.1,5,6,7\n" "2,11.0,-1.1,0.2,8,9,10\n"
+    )
+    cfg = {
+        "input_file": str(csv),
+        "survey_name": "WIDE_CSV",
+        "sample_max_columns": 3,
+    }
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    outdir = insp.run_inspect_config(cfg)
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert len(report["sample"][0]) == 3
+    assert set(report["numeric_stats"]) == {"object_id", "ra", "dec", "z"}
+    assert report["warnings"]
+
+
 def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatch):
     """Verify wide Parquet inspection avoids materializing all columns for sample/stats."""
     monkeypatch.chdir(tmp_path)
@@ -182,8 +211,7 @@ def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatc
     cfg = {
         "input_file": str(parquet),
         "survey_name": "WIDE_PARQUET",
-        "parquet_wide_column_threshold": 5,
-        "parquet_sample_max_columns": 4,
+        "sample_max_columns": 4,
         "parquet_stats_batch_size": 2,
     }
 
@@ -201,6 +229,73 @@ def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatc
     assert set(report["numeric_stats"]) == {"object_id", "ra", "dec", "z"}
     assert report["numeric_stats"]["z"]["mean"] == pytest.approx(0.2)
     assert report["warnings"]
+
+
+def test_inspect_fits_uses_selective_sample_and_stats(tmp_path, monkeypatch):
+    """Verify FITS inspection can sample and compute candidate stats selectively."""
+    from astropy.io import fits
+    from astropy.table import Table
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "sample.fits"
+    fits.HDUList(
+        [
+            fits.PrimaryHDU(),
+            fits.BinTableHDU(
+                Table(
+                    {
+                        "RA": [10.0, 11.0, 12.0],
+                        "DEC": [-1.0, -1.1, -1.2],
+                        "Z": [0.1, 0.2, 0.3],
+                        "CLASS": ["GALAXY", "QSO", "GALAXY"],
+                        "EXTRA": [1, 2, 3],
+                    }
+                ),
+                name="CATALOG",
+            ),
+        ]
+    ).writeto(path)
+    cfg = {
+        "input_file": str(path),
+        "survey_name": "FITS_SELECTIVE",
+        "fits_hdu": 1,
+        "stats_mode": "candidates",
+        "sample_max_columns": 3,
+        "fits_stats_batch_size": 2,
+    }
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    outdir = insp.run_inspect_config(cfg)
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert len(report["sample"][0]) == 3
+    assert set(report["numeric_stats"]) == {"RA", "DEC", "Z"}
+    assert report["numeric_stats"]["Z"]["mean"] == pytest.approx(0.2)
+    assert report["categorical_uniques"]["CLASS"] == ["GALAXY", "QSO"]
+
+
+def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):
+    """Verify direct large FITS inspection defaults to candidate stats."""
+    from astropy.io import fits
+    from astropy.table import Table
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "large.fits"
+    fits.HDUList(
+        [
+            fits.PrimaryHDU(),
+            fits.BinTableHDU(Table({"RA": [10.0, 11.0], "Z": [0.1, 0.2]}), name="CATALOG"),
+        ]
+    ).writeto(path)
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    outdir = insp.run_inspect_config({"input_file": str(path), "survey_name": "LARGE_FITS", "fits_hdu": 1})
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert set(report["numeric_stats"]) == {"RA", "Z"}
+    assert report["categorical_uniques"] == {}
 
 
 @pytest.mark.parametrize(

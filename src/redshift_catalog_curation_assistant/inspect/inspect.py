@@ -11,10 +11,12 @@ import yaml
 from ..io import DEFAULT_DASK_THRESHOLD_BYTES
 
 PARQUET_SUFFIXES = {".parquet", ".pq"}
-PARQUET_WIDE_COLUMN_THRESHOLD = 200
-PARQUET_SAMPLE_MAX_COLUMNS = 100
+FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+SAMPLE_MAX_COLUMNS = 100
 PARQUET_STATS_BATCH_SIZE = 50
+FITS_STATS_BATCH_SIZE = 8
 StatsValue = float | int | None
+STATS_MODES = {"candidates", "all", "none"}
 
 PATTERNS = {
     "ra": [
@@ -23,7 +25,7 @@ PATTERNS = {
         r"(^|_)target_ra($|_)",
         r"(^|_)obsra($|_)",
         r"(^|_)ra_j2000($|_)",
-        r"^alpha$",
+        r"^alpha",
         r"(^|_)right_ascension($|_)",
     ],
     "dec": [
@@ -32,7 +34,8 @@ PATTERNS = {
         r"target_dec",
         r"obsdec",
         r"dec_j2000",
-        r"declination",
+        r"^delta",
+        r"(^|_)declination($|_)",
     ],
     "redshift": [
         r"^z$",
@@ -51,6 +54,8 @@ PATTERNS = {
         r"qop",
         r"(^|_)flag($|_)",
         r"zflag",
+        r"zwarn",
+        r"zwarning",
         r"z_flag",
         r"vi_quality",
         r"confidence",
@@ -107,6 +112,46 @@ def _ordered_unique(values: Iterable[str]) -> list[str]:
 
 def _flatten_candidates(candidates: dict[str, list[str]]) -> list[str]:
     return _ordered_unique(col for cols in candidates.values() for col in cols)
+
+
+def _sample_columns(columns: list[str], candidate_cols: list[str], config: dict[str, Any]) -> list[str]:
+    max_columns = int(config.get("sample_max_columns", SAMPLE_MAX_COLUMNS))
+    if max_columns <= 0:
+        return []
+    return _ordered_unique([*candidate_cols, *columns])[:max_columns]
+
+
+def _stats_mode(config: dict[str, Any]) -> str:
+    stats_mode = str(config.get("stats_mode", "candidates")).lower()
+    if stats_mode not in STATS_MODES:
+        msg = "stats_mode must be one of: candidates, all, none."
+        raise ValueError(msg)
+    return stats_mode
+
+
+def _selected_stats_columns(
+    columns: list[str],
+    numeric_columns: list[str],
+    categorical_columns: list[str],
+    candidate_cols: list[str],
+    config: dict[str, Any],
+    input_kind: str,
+) -> tuple[list[str], list[str], list[str]]:
+    stats_mode = _stats_mode(config)
+
+    if stats_mode == "none":
+        return [], [], [f"{input_kind} statistics were skipped because stats_mode='none'."]
+
+    if stats_mode == "all":
+        return numeric_columns, categorical_columns, []
+
+    selected = set(candidate_cols)
+    selected_numeric = [col for col in numeric_columns if col in selected]
+    selected_categorical = [col for col in categorical_columns if col in selected]
+    warnings = []
+    if not selected_numeric and not selected_categorical:
+        warnings.append("No candidate columns were eligible for statistics.")
+    return selected_numeric, selected_categorical, warnings
 
 
 def _is_dask_dataframe(df: Any) -> bool:
@@ -170,15 +215,29 @@ def gather_categorical_uniques(df: pd.DataFrame | Any, limit: int = 10) -> dict[
     uniques = {}
     categorical = df.select_dtypes(exclude="number")
     for col in categorical.columns:
-        values = _compute_if_needed(categorical[col].dropna().astype(str).unique())
+        series = categorical[col].dropna()
+        if not _is_dask_dataframe(df):
+            series = series.apply(_fits_scalar_value)
+            series = series[series.astype(str) != ""]
+        values = _compute_if_needed(series.astype(str).unique())
         uniques[col] = values[:limit].tolist()
     return uniques
+
+
+def _data_suffix(path: Path) -> str:
+    suffixes = [suffix.lower() for suffix in path.suffixes]
+    data_suffixes = [suffix for suffix in suffixes if suffix != ".gz"]
+    return data_suffixes[-1] if data_suffixes else path.suffix.lower()
 
 
 def _is_parquet_input(path: Path) -> bool:
     if path.is_dir():
         return (path / "_metadata").exists() or any(path.glob("*.parquet")) or any(path.glob("*.pq"))
-    return path.suffix.lower() in PARQUET_SUFFIXES
+    return _data_suffix(path) in PARQUET_SUFFIXES
+
+
+def _is_fits_input(path: Path) -> bool:
+    return path.is_file() and _data_suffix(path) in FITS_SUFFIXES
 
 
 def _parquet_dataset(path: Path) -> Any:
@@ -229,45 +288,17 @@ def _parquet_to_pandas(dataset: Any, columns: list[str], limit: int | None = Non
     return table.to_pandas()
 
 
-def _parquet_sample_columns(
-    columns: list[str], candidate_cols: list[str], config: dict[str, Any]
-) -> list[str]:
-    max_columns = int(config.get("parquet_sample_max_columns", PARQUET_SAMPLE_MAX_COLUMNS))
-    if max_columns <= 0:
-        return []
-    return _ordered_unique([*candidate_cols, *columns])[:max_columns]
-
-
 def _parquet_stats_columns(
     schema: Any, columns: list[str], candidate_cols: list[str], config: dict[str, Any]
 ) -> tuple[list[str], list[str], list[str]]:
-    numeric = _parquet_numeric_columns(schema)
-    categorical = _parquet_categorical_columns(schema)
-    stats_mode = str(config.get("parquet_stats_mode", "auto")).lower()
-    wide_threshold = int(config.get("parquet_wide_column_threshold", PARQUET_WIDE_COLUMN_THRESHOLD))
-    is_wide = len(columns) > wide_threshold
-
-    if stats_mode not in {"auto", "candidates", "all", "none"}:
-        msg = "parquet_stats_mode must be one of: auto, candidates, all, none."
-        raise ValueError(msg)
-    if stats_mode == "none":
-        return [], [], ["Parquet statistics were skipped because parquet_stats_mode='none'."]
-
-    warnings: list[str] = []
-    if stats_mode == "all" or (stats_mode == "auto" and not is_wide):
-        return numeric, categorical, warnings
-
-    selected = set(candidate_cols)
-    selected_numeric = [col for col in numeric if col in selected]
-    selected_categorical = [col for col in categorical if col in selected]
-    if is_wide and stats_mode == "auto":
-        warnings.append(
-            "Parquet input is wide; numeric_stats and categorical_uniques were limited to "
-            "candidate columns. Set parquet_stats_mode: all to inspect every column."
-        )
-    if not selected_numeric and not selected_categorical:
-        warnings.append("No candidate columns were eligible for Parquet statistics.")
-    return selected_numeric, selected_categorical, warnings
+    return _selected_stats_columns(
+        columns,
+        numeric_columns=_parquet_numeric_columns(schema),
+        categorical_columns=_parquet_categorical_columns(schema),
+        candidate_cols=candidate_cols,
+        config=config,
+        input_kind="Parquet",
+    )
 
 
 def _parquet_numeric_stats(
@@ -305,11 +336,11 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
     candidate_cols = _flatten_candidates(candidates)
     warnings = []
 
-    sample_columns = _parquet_sample_columns(columns, candidate_cols, config)
+    sample_columns = _sample_columns(columns, candidate_cols, config)
     if len(sample_columns) < len(columns):
         warnings.append(
             f"Parquet sample was limited to {len(sample_columns)} of {len(columns)} columns. "
-            "Increase parquet_sample_max_columns to include more columns."
+            "Increase sample_max_columns to include more columns."
         )
     sample = _parquet_to_pandas(dataset, sample_columns, limit=5) if sample_columns else pd.DataFrame()
 
@@ -341,6 +372,166 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
         "sample": sample.to_dict(orient="records"),
         "warnings": warnings,
     }
+
+
+def _fits_table_column_names(header: Any) -> list[str]:
+    n_columns = int(header.get("TFIELDS", 0) or 0)
+    return [str(header.get(f"TTYPE{index}", f"COL{index}")) for index in range(1, n_columns + 1)]
+
+
+def _fits_table_formats(header: Any, columns: list[str]) -> dict[str, str]:
+    return {column: str(header.get(f"TFORM{index}", "")) for index, column in enumerate(columns, start=1)}
+
+
+def _fits_format_code(format_value: str) -> str:
+    for char in reversed(format_value.strip().upper()):
+        if char.isalpha():
+            return char
+    return ""
+
+
+def _fits_numeric_columns(formats: dict[str, str]) -> list[str]:
+    numeric_codes = {"B", "I", "J", "K", "E", "D", "C", "M"}
+    return [column for column, fmt in formats.items() if _fits_format_code(fmt) in numeric_codes]
+
+
+def _fits_categorical_columns(formats: dict[str, str]) -> list[str]:
+    categorical_codes = {"A", "L"}
+    return [column for column, fmt in formats.items() if _fits_format_code(fmt) in categorical_codes]
+
+
+def _fits_scalar_columns(fits_hdu: Any, columns: list[str]) -> tuple[list[str], list[str]]:
+    scalar_columns = []
+    skipped_columns = []
+    dtype = fits_hdu.get_rec_dtype()[0]
+    for column in columns:
+        field_dtype = dtype.fields[column][0]
+        if field_dtype.shape == ():
+            scalar_columns.append(column)
+        else:
+            skipped_columns.append(column)
+    return scalar_columns, skipped_columns
+
+
+def _fits_scalar_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
+def _fits_sample(fits_hdu: Any, columns: list[str], n_rows: int = 5) -> list[dict[str, Any]]:
+    if not columns:
+        return []
+    data = fits_hdu.read(columns=columns, rows=range(min(n_rows, fits_hdu.get_nrows())))
+    sample = []
+    for row_data in data:
+        row = {}
+        for column in columns:
+            row[column] = _fits_scalar_value(row_data[column])
+        sample.append(row)
+    return sample
+
+
+def _fits_numeric_stats(
+    fits_hdu: Any, columns: list[str], batch_size: int
+) -> dict[str, dict[str, StatsValue]]:
+    stats: dict[str, dict[str, StatsValue]] = {}
+    for start in range(0, len(columns), batch_size):
+        batch_columns = columns[start : start + batch_size]
+        data = fits_hdu.read(columns=batch_columns)
+        batch_df = pd.DataFrame({column: np.asarray(data[column]) for column in batch_columns})
+        stats.update(gather_stats(batch_df))
+    return stats
+
+
+def _fits_categorical_uniques(
+    fits_hdu: Any, columns: list[str], batch_size: int, limit: int
+) -> dict[str, list[str]]:
+    uniques: dict[str, list[str]] = {}
+    for start in range(0, len(columns), batch_size):
+        batch_columns = columns[start : start + batch_size]
+        data = fits_hdu.read(columns=batch_columns)
+        batch_df = pd.DataFrame({column: np.asarray(data[column]) for column in batch_columns})
+        uniques.update(gather_categorical_uniques(batch_df, limit=limit))
+    return uniques
+
+
+def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) -> dict[str, Any]:
+    import fitsio
+
+    from ..fits.fits import _check_compressed_fits_size
+
+    _check_compressed_fits_size(input_path)
+    fits_hdu = int(config.get("fits_hdu", 1))
+
+    with fitsio.FITS(input_path) as fits_file:
+        hdu = fits_file[fits_hdu]
+        header = hdu.read_header()
+        columns = _fits_table_column_names(header)
+        formats = _fits_table_formats(header, columns)
+        patterns = build_patterns(config)
+        candidates = candidate_columns(columns, patterns)
+        candidate_cols = _flatten_candidates(candidates)
+        warnings = []
+
+        sample_columns = _sample_columns(columns, candidate_cols, config)
+        if len(sample_columns) < len(columns):
+            warnings.append(
+                f"FITS sample was limited to {len(sample_columns)} of {len(columns)} columns. "
+                "Increase sample_max_columns to include more columns."
+            )
+
+        numeric_cols, categorical_cols, stats_warnings = _selected_stats_columns(
+            columns,
+            numeric_columns=_fits_numeric_columns(formats),
+            categorical_columns=_fits_categorical_columns(formats),
+            candidate_cols=candidate_cols,
+            config=config,
+            input_kind="FITS",
+        )
+        warnings.extend(stats_warnings)
+
+        sample = _fits_sample(hdu, sample_columns)
+
+        scalar_numeric_cols, skipped_numeric_cols = (
+            _fits_scalar_columns(hdu, numeric_cols) if numeric_cols else ([], [])
+        )
+        scalar_categorical_cols, skipped_categorical_cols = (
+            _fits_scalar_columns(hdu, categorical_cols) if categorical_cols else ([], [])
+        )
+        skipped_cols = [*skipped_numeric_cols, *skipped_categorical_cols]
+        if skipped_cols:
+            warnings.append("FITS vector columns were skipped for statistics: " + ", ".join(skipped_cols))
+
+        batch_size = int(config.get("fits_stats_batch_size", FITS_STATS_BATCH_SIZE))
+        if batch_size <= 0:
+            msg = "fits_stats_batch_size must be greater than zero."
+            raise ValueError(msg)
+
+        return {
+            "survey": survey,
+            "input_file": str(input_path),
+            "n_rows": int(header.get("NAXIS2", 0) or 0),
+            "n_columns": len(columns),
+            "columns": columns,
+            "dtypes": formats,
+            "candidates": candidates,
+            "numeric_stats": _fits_numeric_stats(hdu, scalar_numeric_cols, batch_size),
+            "categorical_uniques": _fits_categorical_uniques(
+                hdu,
+                scalar_categorical_cols,
+                batch_size=batch_size,
+                limit=int(config.get("unique_limit", 10)),
+            ),
+            "sample": sample,
+            "warnings": warnings,
+        }
 
 
 def build_patterns(config: dict[str, Any]) -> dict[str, list[str]]:
@@ -386,21 +577,50 @@ def _build_report(
     input_path: Path, survey: str, df: pd.DataFrame | Any, config: dict[str, Any]
 ) -> dict[str, Any]:
     patterns = build_patterns(config)
-    sample = _head(df, 5)
+    columns = list(df.columns)
+    candidates = candidate_columns(columns, patterns)
+    candidate_cols = _flatten_candidates(candidates)
+    warnings = []
+
+    sample_columns = _sample_columns(columns, candidate_cols, config)
+    if len(sample_columns) < len(columns):
+        warnings.append(
+            f"Sample was limited to {len(sample_columns)} of {len(columns)} columns. "
+            "Increase sample_max_columns to include more columns."
+        )
+    sample_input = df[sample_columns] if sample_columns else df[[]]
+    sample = _head(sample_input, 5)
     sample = _compute_if_needed(sample)
+
+    numeric_columns = list(df.select_dtypes(include="number").columns)
+    categorical_columns = list(df.select_dtypes(exclude="number").columns)
+    numeric_cols, categorical_cols, stats_warnings = _selected_stats_columns(
+        columns,
+        numeric_columns=numeric_columns,
+        categorical_columns=categorical_columns,
+        candidate_cols=candidate_cols,
+        config=config,
+        input_kind="Tabular",
+    )
+    warnings.extend(stats_warnings)
+
+    stats_df = df[numeric_cols] if numeric_cols else df[[]]
+    categorical_df = df[categorical_cols] if categorical_cols else df[[]]
 
     return {
         "survey": survey,
         "input_file": str(input_path),
         "n_rows": int(len(df)),
-        "n_columns": int(len(df.columns)),
-        "columns": list(df.columns),
+        "n_columns": int(len(columns)),
+        "columns": columns,
         "dtypes": {c: str(t) for c, t in df.dtypes.items()},
-        "candidates": candidate_columns(list(df.columns), patterns),
-        "numeric_stats": gather_stats(df),
-        "categorical_uniques": gather_categorical_uniques(df, limit=int(config.get("unique_limit", 10))),
+        "candidates": candidates,
+        "numeric_stats": gather_stats(stats_df),
+        "categorical_uniques": gather_categorical_uniques(
+            categorical_df, limit=int(config.get("unique_limit", 10))
+        ),
         "sample": sample.to_dict(orient="records"),
-        "warnings": [],
+        "warnings": warnings,
     }
 
 
@@ -424,6 +644,18 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
         (outdir / "inspect_report.md").write_text("\n".join(md))
         return outdir
 
+    if _is_fits_input(input_path):
+        report = _build_fits_report(input_path, survey, cfg)
+        (outdir / "inspect_report.json").write_text(json.dumps(report, indent=2, default=json_default))
+        md = [f"# Inspect report: {survey}\n"]
+        md.append(f"Input file: {input_path}\n")
+        md.append(f"Rows: {report['n_rows']}  Columns: {report['n_columns']}\n")
+        md.append("## Candidate columns by category\n")
+        for k, v in report["candidates"].items():
+            md.append(f"- **{k}**: {', '.join(v) if v else '—'}\n")
+        (outdir / "inspect_report.md").write_text("\n".join(md))
+        return outdir
+
     from ..io import read_table
 
     df = read_table(
@@ -431,7 +663,6 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
         fits_hdu=cfg.get("fits_hdu", 1),
         column_names=cfg.get("column_names"),
         dask_threshold_bytes=_dask_threshold_bytes(cfg),
-        load_big_fits=bool(cfg.get("load_big_fits", False)),
     )
 
     if _is_dask_dataframe(df):

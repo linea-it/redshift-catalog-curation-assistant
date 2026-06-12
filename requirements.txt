@@ -6,4 +6,5 @@ dask[dataframe,distributed]>=2024.1
 dask-jobqueue>=0.8
 pyarrow>=12.0
 astropy>=5.3
+fitsio>=1.3
 pytest>=7.4

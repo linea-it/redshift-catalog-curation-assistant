@@ -1,3 +1,3 @@
-from .fits import describe_fits, format_fits_description
+from .fits import LargeCompressedFitsError, describe_fits, format_fits_description
 
-__all__ = ["describe_fits", "format_fits_description"]
+__all__ = ["LargeCompressedFitsError", "describe_fits", "format_fits_description"]

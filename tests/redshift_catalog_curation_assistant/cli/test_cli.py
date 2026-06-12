@@ -23,7 +23,23 @@ def test_inspect_help():
     result = CliRunner().invoke(cli, ["inspect", "--help"])
 
     assert result.exit_code == 0
-    assert "--load-big-fits" in result.output
+    assert "--fits-hdu" in result.output
+
+
+def test_inspect_fits_reports_large_compressed_file_error(tmp_path, monkeypatch):
+    """Ensure inspect-fits reports large compressed FITS files without traceback."""
+    import redshift_catalog_curation_assistant.fits.fits as fits_module
+
+    path = tmp_path / "large.fits.gz"
+    path.write_bytes(b"not a real gzip")
+    monkeypatch.setattr(fits_module, "_gzip_uncompressed_size", lambda path: 3 * 1024 * 1024 * 1024)
+
+    result = CliRunner().invoke(cli, ["inspect-fits", str(path)])
+
+    assert result.exit_code != 0
+    assert "Compressed FITS file is too large" in result.output
+    assert "gzip -dk" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_version_command():

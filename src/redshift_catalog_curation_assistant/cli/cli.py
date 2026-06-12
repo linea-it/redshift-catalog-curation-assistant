@@ -60,11 +60,6 @@ def cli():
     show_default=True,
     help="Dask cluster config: 'local' or a JSON/Python dict matching the executor schema.",
 )
-@click.option(
-    "--load-big-fits",
-    is_flag=True,
-    help="Allow loading FITS files above the size threshold fully into memory.",
-)
 def inspect(
     config,
     input_path,
@@ -75,7 +70,6 @@ def inspect(
     column_names_list,
     dask_threshold_mb,
     dask_cluster,
-    load_big_fits,
 ):
     """Run inspection using CONFIG YAML or default settings from --path."""
     if bool(config) == bool(input_path):
@@ -85,8 +79,6 @@ def inspect(
         cfg = rc_inspect.load_config(Path(config))
         cfg.setdefault("dask_threshold_mb", dask_threshold_mb)
         cfg.setdefault("dask_cluster", _parse_dask_cluster_option(dask_cluster))
-        if load_big_fits:
-            cfg["load_big_fits"] = True
         outdir = rc_inspect.run_inspect_config(cfg)
     else:
         path = Path(input_path)
@@ -97,7 +89,6 @@ def inspect(
             "unique_limit": unique_limit,
             "dask_threshold_mb": dask_threshold_mb,
             "dask_cluster": _parse_dask_cluster_option(dask_cluster),
-            "load_big_fits": load_big_fits,
         }
         parsed_column_names = _parse_column_names_options(column_names, column_names_list)
         if parsed_column_names:
@@ -151,7 +142,10 @@ def _parse_dask_cluster_option(value: str) -> dict:
 )
 def inspect_fits(path, max_columns):
     """Describe HDUs in a FITS file."""
-    summaries = rc_fits.describe_fits(Path(path), max_columns=max_columns)
+    try:
+        summaries = rc_fits.describe_fits(Path(path), max_columns=max_columns)
+    except rc_fits.LargeCompressedFitsError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(rc_fits.format_fits_description(summaries))
 
 

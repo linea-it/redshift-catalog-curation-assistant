@@ -76,12 +76,12 @@ For FITS catalogs, inspect the HDU structure before choosing `fits_hdu`:
 redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
 ```
 
-Large FITS files at or above the configured threshold are blocked by default
-because the current FITS path loads the selected HDU into memory with astropy
-and pandas. To keep that behavior explicitly, pass `--load-big-fits` or set
-`load_big_fits: true` in YAML. For repeated work on large FITS catalogs, prefer
-converting FITS to Parquet once and running later pipeline steps on the Parquet
-data.
+FITS inspection uses FITS headers first and avoids loading the selected HDU into
+a pandas DataFrame. For large uncompressed FITS files, statistics and sample rows
+are skipped by default unless configured explicitly. Large `.fits.gz` files are
+rejected for HDU inspection because gzip-compressed FITS cannot be memory-mapped
+efficiently; decompress them first, then run `inspect-fits` or `inspect` on the
+uncompressed `.fits` file.
 
 For quick inspection without writing a YAML config first, use defaults from the
 input path:
