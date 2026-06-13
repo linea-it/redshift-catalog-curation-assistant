@@ -300,6 +300,43 @@ def test_prepare_parquet_splits_input_row_groups(tmp_path):
     assert df.npartitions == 3
 
 
+def test_prepare_parquet_does_not_repartition_before_cluster(tmp_path, monkeypatch):
+    """Ensure Parquet inputs avoid driver-side repartition size estimation."""
+    import dask.dataframe as dd
+    import pandas as pd
+
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    parquet = tmp_path / "sample.parquet"
+    pd.DataFrame({"object_id": [1, 2], "z": [0.1, 0.2]}).to_parquet(parquet)
+    output_dir = tmp_path / "prepared"
+    original_repartition = dd.DataFrame.repartition
+
+    def fail_on_partition_size(self, *args, **kwargs):
+        if "partition_size" in kwargs:
+            raise AssertionError("Parquet prepare should not repartition by partition_size before cluster")
+        return original_repartition(self, *args, **kwargs)
+
+    monkeypatch.setattr(dd.DataFrame, "repartition", fail_on_partition_size)
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    prepare_catalog(
+        {
+            "input_file": str(parquet),
+            "output_dir": str(output_dir),
+            "large_file_threshold_mb": 0,
+            "dask_cluster": {
+                "name": "local",
+                "args": {
+                    "processes": False,
+                },
+            },
+        }
+    )
+
+    assert sorted(output_dir.glob("*.parquet"))
+
+
 def test_prepare_large_compressed_file_requires_decompression(tmp_path):
     """Ensure large compressed files fail before Dask processing."""
     compressed = tmp_path / "sample.csv.gz"

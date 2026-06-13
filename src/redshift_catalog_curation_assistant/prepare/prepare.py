@@ -418,10 +418,6 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         write_schema = None
     else:
         df, input_format = _tabular_to_dask_dataframe(input_paths, config)
-        if output_mode != "single" and (
-            suffix in PARQUET_SUFFIXES or any(path.stat().st_size >= threshold_bytes for path in input_paths)
-        ):
-            df = df.repartition(partition_size=_target_partition_size(config))
         n_partitions = int(df.npartitions)
         write_schema = _parquet_arrow_schema(input_paths[0]) if suffix in PARQUET_SUFFIXES else None
 
