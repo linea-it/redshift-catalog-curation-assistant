@@ -78,7 +78,7 @@ def read_table(
             dd = _import_dask_dataframe()
             return dd.read_parquet(str(path))
         raise ValueError(
-            f"Unsupported directory input: {path}. " "Only partitioned Parquet datasets are supported."
+            f"Unsupported directory input: {path}. Only partitioned Parquet datasets are supported."
         )
 
     suffixes = [suffix.lower() for suffix in path.suffixes]

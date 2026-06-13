@@ -33,8 +33,9 @@ After installation, the phase-0 command surface is:
 ```bash
 redshift-curator --help
 redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
+redshift-curator prepare configs/prepare/desi_deep_pilot.example.yaml
 redshift-curator inspect --path tests/data/raw/6dfgs_sample.csv.gz
-redshift-curator inspect configs/synthetic.example.yaml
+redshift-curator inspect configs/inspect/synthetic.example.yaml
 redshift-curator version
 ```
 
@@ -42,25 +43,25 @@ The planned commands are already present in the CLI so scripts can start using
 the stable command names:
 
 ```bash
-redshift-curator curate configs/synthetic.example.yaml
-redshift-curator qa configs/synthetic.example.yaml
-redshift-curator validate-flags configs/synthetic.example.yaml
-redshift-curator run configs/synthetic.example.yaml
+redshift-curator curate configs/inspect/synthetic.example.yaml
+redshift-curator qa configs/inspect/synthetic.example.yaml
+redshift-curator validate-flags configs/inspect/synthetic.example.yaml
+redshift-curator run configs/inspect/synthetic.example.yaml
 ```
 
-Only `inspect` is functional in phase 0. The other commands are placeholders for
-later phases.
+`inspect`, `inspect-fits`, and `prepare` are functional. The other commands are
+placeholders for later phases.
 
 ## Example
 
 The repository includes a small synthetic catalog at
 `tests/data/raw/synthetic_redshift_catalog.csv` and a matching config at
-`configs/synthetic.example.yaml`.
+`configs/inspect/synthetic.example.yaml`.
 
 Running:
 
 ```bash
-redshift-curator inspect configs/synthetic.example.yaml
+redshift-curator inspect configs/inspect/synthetic.example.yaml
 ```
 
 writes:
@@ -82,6 +83,22 @@ are skipped by default unless configured explicitly. Large `.fits.gz` files are
 rejected for HDU inspection because gzip-compressed FITS cannot be memory-mapped
 efficiently; decompress them first, then run `inspect-fits` or `inspect` on the
 uncompressed `.fits` file.
+
+Large or repeated workflows should first normalize raw inputs to partitioned
+Parquet:
+
+```bash
+redshift-curator prepare configs/prepare/desi_deep_pilot.example.yaml
+redshift-curator prepare --path large_catalog.csv --output-dir prepared/large_catalog/ --overwrite
+```
+
+`prepare` reads small single files directly in memory, rejects large compressed
+files with a decompression suggestion, and uses Dask/chunked reading to write
+large CSV/TXT/DAT/IDZ, Parquet, and FITS inputs as multiple Parquet parts. Its
+`output_mode` can be `auto`, `single`, or `partitioned`: `auto` writes one part
+for small single-file inputs and partitioned output for large or multi-file
+inputs. For large or multi-file inputs, `output_mode: single` also requires
+`allow_large_single_output: true`.
 
 For quick inspection without writing a YAML config first, use defaults from the
 input path:
@@ -143,7 +160,7 @@ use `--column-names`; longer schemas are usually easier to review in YAML:
 
 ```bash
 redshift-curator inspect --path sample.dat.gz --column-names '["RA", "Dec", "z"]'
-redshift-curator inspect configs/2dflens.sample.yaml
+redshift-curator inspect configs/inspect/2dflens.example.yaml
 ```
 
 To inspect only a reviewed subset of columns, pass `column_selection` in YAML:

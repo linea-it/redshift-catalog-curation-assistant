@@ -20,7 +20,7 @@ Current source files used to generate the versioned fixtures:
 Versioned fixtures:
 
 - `tests/data/raw/synthetic_redshift_catalog.csv`: small synthetic catalog used
-  by `configs/synthetic.example.yaml`.
+  by `configs/inspect/synthetic.example.yaml`.
 - `tests/data/raw/2dflens_sample.dat.gz`: first 1000 data rows from the 2dFLenS
   file.
 - `tests/data/raw/2dfgrs_sample.idz.gz`: first 1000 original rows from the

@@ -178,7 +178,7 @@ def test_inspect_csv_defaults_to_candidate_stats(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     csv = tmp_path / "wide.csv"
     csv.write_text(
-        "object_id,ra,dec,z,extra_0,extra_1,extra_2\n" "1,10.0,-1.0,0.1,5,6,7\n" "2,11.0,-1.1,0.2,8,9,10\n"
+        "object_id,ra,dec,z,extra_0,extra_1,extra_2\n1,10.0,-1.0,0.1,5,6,7\n2,11.0,-1.1,0.2,8,9,10\n"
     )
     cfg = {
         "input_file": str(csv),
@@ -200,7 +200,7 @@ def test_inspect_config_column_selection_limits_report_columns(tmp_path, monkeyp
     """Verify column_selection limits sample, candidates, dtypes, and stats."""
     monkeypatch.chdir(tmp_path)
     csv = tmp_path / "wide.csv"
-    csv.write_text("object_id,ra,dec,z,kind,extra\n" "1,10.0,-1.0,0.1,galaxy,5\n" "2,11.0,-1.1,0.2,qso,6\n")
+    csv.write_text("object_id,ra,dec,z,kind,extra\n1,10.0,-1.0,0.1,galaxy,5\n2,11.0,-1.1,0.2,qso,6\n")
     cfg = {
         "input_file": str(csv),
         "survey_name": "SELECTED_CSV",
@@ -352,10 +352,10 @@ def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("config_path", "survey", "n_rows"),
     [
-        ("configs/2dfgrs.sample.yaml", "2DFGRS", 1000),
-        ("configs/2dflens.sample.yaml", "2DFLENS", 1000),
-        ("configs/6dfgs.sample.yaml", "6DFGS", 1000),
-        ("configs/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 1000),
+        ("configs/inspect/2dfgrs.example.yaml", "2DFGRS", 1000),
+        ("configs/inspect/2dflens.example.yaml", "2DFLENS", 1000),
+        ("configs/inspect/6dfgs.example.yaml", "6DFGS", 1000),
+        ("configs/inspect/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 1000),
     ],
 )
 def test_inspect_versioned_sample_configs(config_path, survey, n_rows, tmp_path, monkeypatch):

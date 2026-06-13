@@ -13,6 +13,7 @@ def test_cli_help():
     assert result.exit_code == 0
     assert "inspect" in result.output
     assert "inspect-fits" in result.output
+    assert "prepare" in result.output
     assert "curate" in result.output
     assert "qa" in result.output
     assert "validate-flags" in result.output
@@ -27,6 +28,15 @@ def test_inspect_help():
     assert "--fits-hdu" in result.output
     assert "--stats-mode" in result.output
     assert "--sample-max-columns" in result.output
+
+
+def test_prepare_help():
+    """Ensure the prepare command exposes output layout options."""
+    result = CliRunner().invoke(cli, ["prepare", "--help"])
+
+    assert result.exit_code == 0
+    assert "--output-mode" in result.output
+    assert "--allow-large-single-output" in result.output
 
 
 def test_inspect_fits_reports_large_compressed_file_error(tmp_path, monkeypatch):
@@ -51,6 +61,31 @@ def test_version_command():
 
     assert result.exit_code == 0
     assert result.output.strip()
+
+
+def test_prepare_path_command(tmp_path):
+    """Ensure prepare can materialize a small file as Parquet."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+    output_dir = tmp_path / "prepared"
+
+    result = CliRunner().invoke(cli, ["prepare", "--path", str(csv), "--output-dir", str(output_dir)])
+
+    assert result.exit_code == 0
+    assert "Prepared catalog written to" in result.output
+    assert sorted(output_dir.glob("*.parquet"))
+    assert (output_dir / "_redshift_curator_manifest.json").exists()
+
+
+def test_prepare_rejects_missing_output_dir(tmp_path):
+    """Ensure prepare requires an output directory when no config is provided."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    result = CliRunner().invoke(cli, ["prepare", "--path", str(csv)])
+
+    assert result.exit_code != 0
+    assert "at least one --path plus --output-dir" in result.output
 
 
 def test_inspect_path_command(tmp_path, monkeypatch):
