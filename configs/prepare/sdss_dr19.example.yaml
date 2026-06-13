@@ -16,3 +16,18 @@ dask_cluster:
     threads_per_worker: 1
     memory_limit: 6GB
     dashboard_address:
+
+#dask_cluster:
+#  name: slurm
+#  args:
+#    instance:
+#      cores: 2
+#      processes: 1
+#      memory: 16GB
+#      walltime: "01:00:00"
+#      queue: cpu
+#      account: hpc-public
+#      interface: ib0
+#    scale:
+#      minimum_jobs: 10
+#      maximum_jobs: 10
