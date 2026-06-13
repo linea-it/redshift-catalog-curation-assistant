@@ -82,6 +82,7 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
         "survey_name: TEST_DASK\n"
         "stats_mode: all\n"
         "dask_threshold_mb: 0.000001\n"
+        "allow_large_raw_inspect: true\n"
         "dask_cluster:\n"
         "  name: local\n"
         "  args:\n"
@@ -128,6 +129,42 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
     assert report["numeric_stats"]["z_phot"]["count"] == 2
     assert report["categorical_uniques"]["kind"] == ["galaxy", "qso"]
     assert report["sample"][0]["id"] == 1
+
+
+def test_inspect_large_raw_input_recommends_prepare(tmp_path, monkeypatch):
+    """Ensure large raw inputs are routed through prepare by default."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "large.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    with pytest.raises(ValueError, match="Run prepare first"):
+        insp.run_inspect_config(
+            {
+                "input_file": str(csv),
+                "survey_name": "RAW_LARGE",
+                "dask_threshold_mb": 0.000001,
+            }
+        )
+
+
+def test_inspect_large_compressed_input_recommends_decompression(tmp_path, monkeypatch):
+    """Ensure large compressed raw inputs fail with a decompression hint."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "large.csv.gz"
+    csv.write_bytes(b"compressed")
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    with pytest.raises(ValueError, match="gzip -dk"):
+        insp.run_inspect_config(
+            {
+                "input_file": str(csv),
+                "survey_name": "RAW_COMPRESSED",
+                "dask_threshold_mb": 0.000001,
+            }
+        )
 
 
 def test_gather_stats_handles_non_native_numeric_byte_order():

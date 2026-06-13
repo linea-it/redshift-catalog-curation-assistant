@@ -77,13 +77,18 @@ def cli():
     "--dask-threshold-mb",
     default=100.0,
     show_default=True,
-    help="Use Dask for supported non-FITS files at or above this size. Use 0 to disable.",
+    help="Raw input size threshold for requiring prepare before direct inspect.",
 )
 @click.option(
     "--dask-cluster",
     default="local",
     show_default=True,
     help="Dask cluster config: 'local' or a JSON/Python dict matching the executor schema.",
+)
+@click.option(
+    "--allow-large-raw-inspect",
+    is_flag=True,
+    help="Allow direct inspection of large non-Parquet raw inputs instead of requiring prepare first.",
 )
 def inspect(
     config,
@@ -99,6 +104,7 @@ def inspect(
     column_selection_list,
     dask_threshold_mb,
     dask_cluster,
+    allow_large_raw_inspect,
 ):
     """Run inspection using CONFIG YAML or default settings from --path."""
     if bool(config) == bool(input_path):
@@ -110,6 +116,8 @@ def inspect(
         cfg.setdefault("sample_max_columns", sample_max_columns)
         cfg.setdefault("dask_threshold_mb", dask_threshold_mb)
         cfg.setdefault("dask_cluster", _parse_dask_cluster_option(dask_cluster))
+        if allow_large_raw_inspect:
+            cfg["allow_large_raw_inspect"] = True
     else:
         path = Path(input_path)
         cfg = {
@@ -121,6 +129,7 @@ def inspect(
             "sample_max_columns": sample_max_columns,
             "dask_threshold_mb": dask_threshold_mb,
             "dask_cluster": _parse_dask_cluster_option(dask_cluster),
+            "allow_large_raw_inspect": allow_large_raw_inspect,
         }
         parsed_column_names = _parse_column_names_options(column_names, column_names_list)
         if parsed_column_names:

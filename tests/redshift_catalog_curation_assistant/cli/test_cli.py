@@ -28,6 +28,7 @@ def test_inspect_help():
     assert "--fits-hdu" in result.output
     assert "--stats-mode" in result.output
     assert "--sample-max-columns" in result.output
+    assert "--allow-large-raw-inspect" in result.output
 
 
 def test_prepare_help():

@@ -12,6 +12,7 @@ from ..io import DEFAULT_DASK_THRESHOLD_BYTES
 
 PARQUET_SUFFIXES = {".parquet", ".pq"}
 FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+COMPRESSED_SUFFIXES = {".gz", ".bz2", ".xz", ".zip"}
 SAMPLE_MAX_COLUMNS = 100
 PARQUET_STATS_BATCH_SIZE = 50
 FITS_STATS_BATCH_SIZE = 8
@@ -262,8 +263,25 @@ def gather_categorical_uniques(df: pd.DataFrame | Any, limit: int = 10) -> dict[
 
 def _data_suffix(path: Path) -> str:
     suffixes = [suffix.lower() for suffix in path.suffixes]
-    data_suffixes = [suffix for suffix in suffixes if suffix != ".gz"]
+    data_suffixes = [suffix for suffix in suffixes if suffix not in COMPRESSED_SUFFIXES]
     return data_suffixes[-1] if data_suffixes else path.suffix.lower()
+
+
+def _is_compressed(path: Path) -> bool:
+    return any(suffix.lower() in COMPRESSED_SUFFIXES for suffix in path.suffixes)
+
+
+def _decompress_command(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".gz":
+        return f"gzip -dk {path}"
+    if suffix == ".bz2":
+        return f"bzip2 -dk {path}"
+    if suffix == ".xz":
+        return f"xz -dk {path}"
+    if suffix == ".zip":
+        return f"unzip {path}"
+    return f"decompress {path}"
 
 
 def _is_parquet_input(path: Path) -> bool:
@@ -606,6 +624,46 @@ def _dask_threshold_bytes(config: dict[str, Any]) -> int | None:
     return int(threshold_mb * 1024 * 1024)
 
 
+def _prepare_command_hint(input_path: Path) -> str:
+    output_dir = Path("reports") / "prepared" / f"{input_path.stem}.parquet"
+    return f"redshift-curator prepare --path {input_path} --output-dir {output_dir} --overwrite"
+
+
+def _check_raw_input_policy(input_path: Path, config: dict[str, Any]) -> None:
+    if not input_path.is_file() or _is_parquet_input(input_path):
+        return
+
+    threshold_bytes = _dask_threshold_bytes(config) or DEFAULT_DASK_THRESHOLD_BYTES
+    if input_path.stat().st_size < threshold_bytes:
+        return
+    if bool(config.get("allow_large_raw_inspect", False)):
+        return
+
+    if _is_compressed(input_path):
+        msg = (
+            f"Input file is larger than the configured inspect threshold and is compressed: {input_path}\n\n"
+            "Inspect does not process large compressed raw catalogs directly. Decompress the file first, "
+            "then run prepare to materialize a Parquet dataset before inspection.\n\n"
+            f"Suggested decompression command:\n  {_decompress_command(input_path)}\n\n"
+            "After decompression, run:\n"
+            f"  {_prepare_command_hint(Path(str(input_path).removesuffix(input_path.suffix)))}\n"
+            "Then inspect the prepared Parquet directory."
+        )
+        raise ValueError(msg)
+
+    input_format = "FITS" if _is_fits_input(input_path) else "raw"
+    msg = (
+        f"{input_format} input is larger than the configured inspect threshold: {input_path}\n\n"
+        "Run prepare first so the catalog is normalized to a Parquet dataset without loading the whole "
+        "raw file into memory during inspection.\n\n"
+        "Suggested command:\n"
+        f"  {_prepare_command_hint(input_path)}\n\n"
+        "Then inspect the prepared Parquet directory. If direct raw inspection is intentional, set "
+        "allow_large_raw_inspect: true in YAML."
+    )
+    raise ValueError(msg)
+
+
 def _dask_logs_dir(cluster_config: dict[str, Any], outdir: Path) -> Path | None:
     logs_dir = cluster_config.get("logs_dir")
     if logs_dir:
@@ -688,15 +746,18 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
     input_path = Path(cfg["input_file"])
     survey = cfg.get("survey_name", input_path.stem)
     outdir = Path("reports") / survey
-    outdir.mkdir(parents=True, exist_ok=True)
 
     if _is_parquet_input(input_path):
         report = _build_parquet_report(input_path, survey, cfg)
+        outdir.mkdir(parents=True, exist_ok=True)
         _write_report(outdir, survey, input_path, report)
         return outdir
 
+    _check_raw_input_policy(input_path, cfg)
+
     if _is_fits_input(input_path):
         report = _build_fits_report(input_path, survey, cfg)
+        outdir.mkdir(parents=True, exist_ok=True)
         _write_report(outdir, survey, input_path, report)
         return outdir
 
@@ -718,6 +779,7 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
     else:
         report = _build_report(input_path, survey, df, cfg)
 
+    outdir.mkdir(parents=True, exist_ok=True)
     _write_report(outdir, survey, input_path, report)
     return outdir
 

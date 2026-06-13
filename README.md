@@ -108,18 +108,23 @@ redshift-curator inspect --path tests/data/raw/6dfgs_sample.csv.gz
 redshift-curator inspect --path tests/data/raw/desi_deep_pilot_sample.fits --fits-hdu 1
 ```
 
-For supported non-FITS tabular formats, files at or above 100 MB are read with
-Dask by default. Dask uses a local cluster with 2 workers, 1 thread per worker,
-and 1 GB per worker unless configured otherwise. Tune the threshold with
-`--dask-threshold-mb` or with `dask_threshold_mb` in YAML; use `0` to disable
-Dask:
+For raw inputs at or above 100 MB, `inspect` now recommends running `prepare`
+first instead of inspecting the large source file directly. This keeps inspection
+lightweight and makes the prepared Parquet dataset the canonical input for later
+pipeline phases. Tune the threshold with `--dask-threshold-mb` or with
+`dask_threshold_mb` in YAML:
 
 ```bash
-redshift-curator inspect --path large_catalog.csv --dask-threshold-mb 250
+redshift-curator prepare --path large_catalog.csv --output-dir reports/prepared/large_catalog.parquet --overwrite
+redshift-curator inspect --path reports/prepared/large_catalog.parquet
 ```
 
+Large compressed raw inputs are rejected with a decompression command suggestion
+before `prepare`. Advanced users can still opt into direct raw inspection with
+`--allow-large-raw-inspect` or `allow_large_raw_inspect: true` in YAML.
+
 Partitioned Parquet datasets are also accepted as input directories and are
-always read with Dask:
+inspected through the PyArrow dataset path:
 
 ```bash
 redshift-curator inspect --path converted_catalog/
