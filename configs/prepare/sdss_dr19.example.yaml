@@ -12,7 +12,7 @@ part_prefix: sdss_dr19
 dask_cluster:
   name: local
   args:
-    n_workers: 3
+    n_workers: 2
     threads_per_worker: 1
-    memory_limit: 2GB
+    memory_limit: 6GB
     dashboard_address:

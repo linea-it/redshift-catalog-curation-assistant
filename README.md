@@ -136,6 +136,7 @@ Advanced users can configure the cluster in YAML:
 dask_threshold_mb: 250
 dask_cluster:
   name: slurm
+  # Optional. Defaults to the command output directory plus logs/.
   logs_dir: reports/slurm-logs
   args:
     instance:
@@ -153,7 +154,8 @@ The same executor schema can be passed through the CLI with `--dask-cluster`,
 although YAML is usually easier to review. SLURM clusters must be passed as a
 full dict with `args`; `--dask-cluster slurm` is intentionally rejected. SLURM
 configs require `args.instance.cores`, `args.instance.memory`, and
-`args.scale.minimum_jobs > 0`:
+`args.scale.minimum_jobs > 0`. If `logs_dir` is omitted, SLURM job logs are
+written under the command output directory in `logs/`:
 
 ```bash
 redshift-curator inspect --path large_catalog.parquet \

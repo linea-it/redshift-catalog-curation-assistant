@@ -669,7 +669,7 @@ def _dask_logs_dir(cluster_config: dict[str, Any], outdir: Path) -> Path | None:
     if logs_dir:
         return Path(logs_dir)
     if cluster_config.get("name") == "slurm":
-        return outdir / "dask-logs"
+        return outdir / "logs"
     return None
 
 

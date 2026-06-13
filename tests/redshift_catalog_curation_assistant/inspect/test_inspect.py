@@ -167,6 +167,15 @@ def test_inspect_large_compressed_input_recommends_decompression(tmp_path, monke
         )
 
 
+def test_inspect_slurm_defaults_logs_to_report_logs_dir(tmp_path):
+    """Ensure inspect SLURM logs live under the report directory by default."""
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
+
+    logs_dir = insp._dask_logs_dir({"name": "slurm"}, tmp_path / "reports" / "SURVEY")
+
+    assert logs_dir == tmp_path / "reports" / "SURVEY" / "logs"
+
+
 def test_gather_stats_handles_non_native_numeric_byte_order():
     """Verify FITS-style big-endian numeric columns do not break stats."""
     import redshift_catalog_curation_assistant.inspect as insp

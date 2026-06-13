@@ -21,6 +21,7 @@ dask_cluster:
 #
 # dask_cluster:
 #   name: slurm
+#   # Optional. Defaults to output_dir/logs for prepare.
 #   logs_dir: reports/slurm-logs
 #   args:
 #     instance:

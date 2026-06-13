@@ -50,6 +50,12 @@ def _target_partition_size(config: dict[str, Any]) -> str:
     return f"{int(float(value))}MB"
 
 
+def _target_partition_size_bytes(config: dict[str, Any]) -> int:
+    return _bytes_from_mb(
+        config.get("target_partition_size_mb"), DEFAULT_TARGET_PARTITION_SIZE_MB * 1024 * 1024
+    )
+
+
 def _output_mode(config: dict[str, Any]) -> str:
     output_mode = str(config.get("output_mode", "auto")).lower()
     if output_mode not in OUTPUT_MODES:
@@ -182,6 +188,12 @@ def _schema_for_path(path: Path, suffix: str, config: dict[str, Any]) -> list[st
     raise PrepareError(f"Unsupported prepare input format: {suffix or path}")
 
 
+def _parquet_arrow_schema(path: Path) -> Any:
+    import pyarrow.parquet as pq
+
+    return pq.read_schema(path)
+
+
 def _validate_matching_schemas(paths: list[Path], suffix: str, config: dict[str, Any]) -> list[str]:
     schemas = {path: _schema_for_path(path, suffix, config) for path in paths}
     first_path = paths[0]
@@ -197,7 +209,16 @@ def _validate_matching_schemas(paths: list[Path], suffix: str, config: dict[str,
     raise PrepareError("\n".join(lines))
 
 
-def _fits_to_dask_dataframe(path: Path, fits_hdu: int, chunk_size: int) -> tuple[Any, int, int, list[str]]:
+def _fits_effective_chunk_size(configured_chunk_size: int, row_size_bytes: int, target_bytes: int) -> int:
+    if row_size_bytes <= 0 or target_bytes <= 0:
+        return configured_chunk_size
+    target_rows = max(int(target_bytes // row_size_bytes), 1)
+    return max(min(configured_chunk_size, target_rows), 1)
+
+
+def _fits_to_dask_dataframe(
+    path: Path, fits_hdu: int, chunk_size: int, target_partition_bytes: int
+) -> tuple[Any, int, int, list[str]]:
     import dask.dataframe as dd
     import fitsio
 
@@ -205,11 +226,13 @@ def _fits_to_dask_dataframe(path: Path, fits_hdu: int, chunk_size: int) -> tuple
         hdu = fits_file[fits_hdu]
         n_rows = int(hdu.get_nrows())
         colnames = list(hdu.get_colnames())
+        row_size_bytes = int(hdu.get_rec_dtype()[0].itemsize)
 
     if n_rows == 0:
         meta = pd.DataFrame({name: pd.Series(dtype="object") for name in colnames})
         return dd.from_pandas(meta, npartitions=1), 1, n_rows, colnames
 
+    chunk_size = _fits_effective_chunk_size(chunk_size, row_size_bytes, target_partition_bytes)
     first_stop = min(chunk_size, n_rows)
     meta = _read_fits_chunk(str(path), fits_hdu, 0, first_stop).iloc[:0]
     chunks = [
@@ -220,13 +243,17 @@ def _fits_to_dask_dataframe(path: Path, fits_hdu: int, chunk_size: int) -> tuple
     return dd.concat(dask_chunks), len(dask_chunks), n_rows, colnames
 
 
-def _fits_paths_to_dask_dataframe(paths: list[Path], fits_hdu: int, chunk_size: int) -> tuple[Any, int]:
+def _fits_paths_to_dask_dataframe(
+    paths: list[Path], fits_hdu: int, chunk_size: int, target_partition_bytes: int
+) -> tuple[Any, int]:
     import dask.dataframe as dd
 
     dataframes = []
     n_partitions = 0
     for path in paths:
-        df, path_partitions, _n_rows, _colnames = _fits_to_dask_dataframe(path, fits_hdu, chunk_size)
+        df, path_partitions, _n_rows, _colnames = _fits_to_dask_dataframe(
+            path, fits_hdu, chunk_size, target_partition_bytes
+        )
         dataframes.append(df)
         n_partitions += path_partitions
     if len(dataframes) == 1:
@@ -261,21 +288,38 @@ def _tabular_to_dask_dataframe(paths: list[Path], config: dict[str, Any]) -> tup
             suffix.lstrip("."),
         )
     if suffix in PARQUET_SUFFIXES:
-        return dd.read_parquet(path_strings), "parquet"
+        return (
+            dd.read_parquet(
+                path_strings,
+                split_row_groups=True,
+                blocksize=_target_partition_size(config),
+                aggregate_files=False,
+            ),
+            "parquet",
+        )
     raise PrepareError(f"Unsupported prepare input format: {suffix or paths[0]}")
 
 
-def _write_dask_parquet(df: Any, output_dir: Path, prefix: str, overwrite: bool, output_mode: str) -> int:
+def _write_dask_parquet(
+    df: Any,
+    output_dir: Path,
+    prefix: str,
+    overwrite: bool,
+    output_mode: str,
+    schema: Any | None = None,
+) -> int:
     if output_mode == "single":
         df = df.repartition(npartitions=1)
     n_parts = int(df.npartitions)
     n_digits = max(len(str(n_parts)), 1)
+    parquet_kwargs = {"schema": schema} if schema is not None else {}
     df.to_parquet(
         output_dir,
         engine="pyarrow",
         write_index=False,
         overwrite=overwrite,
         name_function=lambda index: f"{prefix}-part{index:0{n_digits}d}.parquet",
+        **parquet_kwargs,
     )
     return n_parts
 
@@ -307,6 +351,15 @@ def _resolve_output_mode(config: dict[str, Any], is_single_small_file: bool, is_
         )
         raise PrepareError(msg)
     return output_mode
+
+
+def _dask_logs_dir(cluster_config: dict[str, Any], output_dir: Path) -> Path | None:
+    logs_dir = cluster_config.get("logs_dir")
+    if logs_dir:
+        return Path(logs_dir)
+    if cluster_config.get("name") == "slurm":
+        return output_dir / "logs"
+    return None
 
 
 def prepare_catalog(config: dict[str, Any]) -> Path:
@@ -357,8 +410,12 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
 
     if suffix in FITS_SUFFIXES:
         df, n_partitions = _fits_paths_to_dask_dataframe(
-            input_paths, int(config.get("fits_hdu", 1)), chunk_size
+            input_paths,
+            int(config.get("fits_hdu", 1)),
+            chunk_size,
+            _target_partition_size_bytes(config),
         )
+        write_schema = None
     else:
         df, input_format = _tabular_to_dask_dataframe(input_paths, config)
         if output_mode != "single" and (
@@ -366,9 +423,10 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         ):
             df = df.repartition(partition_size=_target_partition_size(config))
         n_partitions = int(df.npartitions)
+        write_schema = _parquet_arrow_schema(input_paths[0]) if suffix in PARQUET_SUFFIXES else None
 
     cluster_config = dask_cluster_config(config)
-    logs_dir = Path(cluster_config["logs_dir"]) if cluster_config.get("logs_dir") else None
+    logs_dir = _dask_logs_dir(cluster_config, output_dir)
     with dask_client_context(cluster_config, logs_dir=logs_dir):
         n_written = _write_dask_parquet(
             df,
@@ -376,6 +434,7 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
             prefix=prefix,
             overwrite=True,
             output_mode=output_mode,
+            schema=write_schema,
         )
 
     _write_manifest(
