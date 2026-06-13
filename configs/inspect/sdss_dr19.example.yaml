@@ -1,0 +1,40 @@
+input_file: data_not_tracked/spAll-v6_1_3.fits
+survey_name: SDSS_DR19_SPALL
+fits_hdu: 1
+unique_limit: 10
+allow_large_raw_inspect: true
+
+stats_mode: candidates
+sample_max_columns: 80
+fits_stats_batch_size: 8
+
+column_patterns:
+  ra:
+    - "^RACAT$"
+    - "^FIBER_RA$"
+    - "^PLUG_RA$"
+  dec:
+    - "^DECCAT$"
+    - "^FIBER_DEC$"
+    - "^PLUG_DEC$"
+  redshift:
+    - "^Z$"
+    - "^Z_NOQSO$"
+  redshift_error:
+    - "^Z_ERR$"
+    - "^Z_ERR_NOQSO$"
+  quality:
+    - "^ZWARNING$"
+    - "^ZWARNING_NOQSO$"
+    - "^SN_MEDIAN.*"
+  id:
+    - "^SPECOBJID$"
+    - "^SDSS_ID$"
+    - "^CATALOGID$"
+    - "^TARGETID$"
+    - "^FIELD$"
+    - "^MJD$"
+  object_type:
+    - "^CLASS$"
+    - "^SUBCLASS$"
+    - "^OBJTYPE$"

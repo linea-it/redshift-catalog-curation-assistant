@@ -20,7 +20,7 @@ Current source files used to generate the versioned fixtures:
 Versioned fixtures:
 
 - `tests/data/raw/synthetic_redshift_catalog.csv`: small synthetic catalog used
-  by `configs/synthetic.example.yaml`.
+  by `configs/inspect/synthetic.example.yaml`.
 - `tests/data/raw/2dflens_sample.dat.gz`: first 1000 data rows from the 2dFLenS
   file.
 - `tests/data/raw/2dfgrs_sample.idz.gz`: first 1000 original rows from the
@@ -30,8 +30,9 @@ Versioned fixtures:
 - `tests/data/raw/6dfgs_sample.csv.gz`: CSV header plus first 1000 rows from the
   6dFGS file.
 
-Catalogs without column names can be read only when the YAML config provides an
-explicit `column_names` list. The list must have exactly the same number of
+Catalogs without column names can be read only when explicit column names are
+provided, either with `column_names` in YAML or with `--column-name`/
+`--column-names` in the CLI. The list must have exactly the same number of
 entries as the file has columns. This is required for the 2dFGRS and 2dFLenS
 fixtures, and those names should be treated as user-supplied scientific
 metadata.

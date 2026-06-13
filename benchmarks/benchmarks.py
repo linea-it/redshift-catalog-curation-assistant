@@ -3,7 +3,7 @@
 For more information on writing benchmarks:
 https://asv.readthedocs.io/en/stable/writing_benchmarks.html."""
 
-from redshift_catalog_curation_assistant import example_benchmarks
+from redshift_catalog_curation_assistant.benchmarks import example_benchmarks
 
 
 def time_computation():

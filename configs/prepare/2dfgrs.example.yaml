@@ -1,0 +1,54 @@
+input_file: tests/data/raw/2dfgrs_sample.idz.gz
+output_dir: reports/prepared/2dfgrs.parquet
+chunk_size_rows: 200000
+large_file_threshold_mb: 100
+target_partition_size_mb: 100
+output_mode: auto
+allow_large_single_output: false
+overwrite: true
+part_prefix: 2dfgrs
+
+column_names:
+  - serial
+  - spectra
+  - name
+  - UKST
+  - ra_b1950_h
+  - ra_b1950_m
+  - ra_b1950_s
+  - dec_b1950_d
+  - dec_b1950_m
+  - dec_b1950_s
+  - ra_j2000_h
+  - ra_j2000_m
+  - ra_j2000_s
+  - dec_j2000_d
+  - dec_j2000_m
+  - dec_j2000_s
+  - BJG
+  - BJSEL
+  - BJG_OLD
+  - BJSELOLD
+  - GALEXT
+  - SB_BJ
+  - SR_R
+  - z
+  - z_helio
+  - obsrun
+  - quality
+  - abemma
+  - Z_ABS
+  - KBESTR
+  - R_CRCOR
+  - Z_EMI
+  - NMBEST
+  - SNR
+  - ETA_TYPE
+
+dask_cluster:
+  name: local
+  args:
+    n_workers: 3
+    threads_per_worker: 1
+    memory_limit: 2GB
+    dashboard_address:
