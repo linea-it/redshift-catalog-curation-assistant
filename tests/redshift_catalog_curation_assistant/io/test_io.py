@@ -3,6 +3,12 @@ import pytest
 from redshift_catalog_curation_assistant.io import _should_use_dask, read_table
 
 
+def assert_dask_dataframe(df):
+    """Ensure a DataFrame came from Dask without relying on its internal class module."""
+    assert hasattr(df, "compute")
+    assert hasattr(df, "npartitions")
+
+
 def test_headerless_file_requires_column_names(tmp_path):
     """Ensure headerless files ask for explicit user-provided column names."""
     path = tmp_path / "sample.idz"
@@ -70,7 +76,7 @@ def test_read_table_uses_dask_for_csv_at_threshold(tmp_path):
 
     df = read_table(path, dask_threshold_bytes=0)
 
-    assert df.__class__.__module__.startswith("dask.dataframe")
+    assert_dask_dataframe(df)
     assert list(df.columns) == ["object_id", "z"]
     assert len(df) == 2
 
@@ -82,7 +88,7 @@ def test_read_table_uses_dask_for_headerless_table_at_threshold(tmp_path):
 
     df = read_table(path, column_names=["object_id", "ra", "dec", "z"], dask_threshold_bytes=0)
 
-    assert df.__class__.__module__.startswith("dask.dataframe")
+    assert_dask_dataframe(df)
     assert list(df.columns) == ["object_id", "ra", "dec", "z"]
     assert len(df) == 2
 
@@ -95,7 +101,7 @@ def test_read_table_uses_dask_for_parquet_at_threshold(tmp_path):
 
     df = read_table(path, dask_threshold_bytes=0)
 
-    assert df.__class__.__module__.startswith("dask.dataframe")
+    assert_dask_dataframe(df)
     assert list(df.columns) == ["object_id", "z"]
     assert len(df) == 2
 
@@ -110,7 +116,7 @@ def test_read_table_uses_dask_for_partitioned_parquet_directory(tmp_path):
 
     df = read_table(path)
 
-    assert df.__class__.__module__.startswith("dask.dataframe")
+    assert_dask_dataframe(df)
     assert list(df.columns) == ["object_id", "z"]
     assert len(df) == 2
 

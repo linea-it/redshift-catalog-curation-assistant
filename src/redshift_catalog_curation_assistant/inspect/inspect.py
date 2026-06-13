@@ -192,7 +192,7 @@ def _selected_stats_columns(
 
 
 def _is_dask_dataframe(df: Any) -> bool:
-    return df.__class__.__module__.startswith("dask.dataframe")
+    return df.__class__.__module__.startswith(("dask.dataframe", "dask_expr."))
 
 
 def _compute_if_needed(value: Any) -> Any:
