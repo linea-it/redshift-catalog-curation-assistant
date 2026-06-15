@@ -28,6 +28,7 @@ def test_inspect_help():
     assert "--fits-hdu" in result.output
     assert "--stats-mode" in result.output
     assert "--sample-max-columns" in result.output
+    assert "--output-dir" in result.output
     assert "--allow-large-raw-inspect" in result.output
 
 
@@ -100,6 +101,33 @@ def test_inspect_path_command(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "reports/PATH_SAMPLE" in result.output
     assert (tmp_path / "reports" / "PATH_SAMPLE" / "inspect_report.json").exists()
+
+
+def test_inspect_path_command_accepts_output_dir(tmp_path, monkeypatch):
+    """Ensure inspect --path can write reports to an explicit directory."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n")
+    output_dir = tmp_path / "inspect-output"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "inspect",
+            "--path",
+            str(csv),
+            "--survey-name",
+            "PATH_OUTPUT",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert f"Wrote inspection reports to {output_dir}" in result.output
+    assert (output_dir / "inspect_report.json").exists()
+    assert (output_dir / "inspect_report.md").exists()
+    assert not (tmp_path / "reports" / "PATH_OUTPUT").exists()
 
 
 def test_inspect_path_accepts_partitioned_parquet_directory(tmp_path, monkeypatch):
