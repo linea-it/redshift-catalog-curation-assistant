@@ -1,241 +1,82 @@
 # redshift-catalog-curation-assistant
 
-A simple, reproducible and extensible tool to aid in the technical curation of
-heterogeneous redshift catalogs.
-
+[![Template](https://img.shields.io/badge/Template-LINCC%20Frameworks%20Python%20Project%20Template-brightgreen)](https://lincc-ppt.readthedocs.io/en/latest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python Versions](https://img.shields.io/badge/python-3.11+-blue.svg)]()
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/luigilcsilva/redshift-catalog-curation-assistant/smoke-test.yml)](https://github.com/luigilcsilva/redshift-catalog-curation-assistant/actions/workflows/smoke-test.yml)
 [![Codecov](https://codecov.io/gh/luigilcsilva/redshift-catalog-curation-assistant/branch/main/graph/badge.svg)](https://codecov.io/gh/luigilcsilva/redshift-catalog-curation-assistant)
 
-The project is a local-first Python CLI. It helps a human curator inspect raw
-catalogs, identify candidate columns, and prepare explicit curation rules before
-later conversion, QA, validation, and cloud execution phases.
+This project was created following the LINCC Frameworks Python Project Template
+(https://lincc-ppt.readthedocs.io/en/latest/).
+
+A local-first CLI for technical curation of heterogeneous redshift catalogs.
+
+The tool helps a human curator inspect catalog structure, prepare large inputs
+as Parquet, and apply explicit curation rules. It does not make scientific
+decisions automatically.
 
 ## Install
-
-Create and activate the project environment, then install the package in editable
-mode:
 
 ```bash
 conda activate redshift-catalog-curation-assistant
 python -m pip install -e '.[dev]'
 ```
 
-## CLI
-
-After installation, the phase-0 command surface is:
+## Quick Start
 
 ```bash
 redshift-curator --help
+redshift-curator inspect configs/inspect/synthetic.example.yaml
 redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
 redshift-curator prepare configs/prepare/desi_deep_pilot.example.yaml
 redshift-curator curate configs/curate/synthetic.example.yaml
-redshift-curator inspect --path tests/data/raw/6dfgs_sample.csv.gz
-redshift-curator inspect configs/inspect/synthetic.example.yaml
-redshift-curator version
 ```
 
-Later-phase command names are already present in the CLI so scripts can start
-using stable names:
+Functional commands:
+
+- `inspect`: build JSON and Markdown inspection reports.
+- `inspect-fits`: summarize FITS HDUs without loading table data.
+- `prepare`: normalize raw inputs to Parquet datasets.
+- `curate`: apply explicit curation rules and write Parquet datasets.
+
+Planned command names are also present for later phases: `qa`,
+`validate-flags`, and `run`.
+
+## Current Workflow
+
+For small catalogs, inspect and curate can read supported raw files directly.
+For large or repeated workflows, prepare first:
 
 ```bash
-redshift-curator qa configs/inspect/synthetic.example.yaml
-redshift-curator validate-flags configs/inspect/synthetic.example.yaml
-redshift-curator run configs/inspect/synthetic.example.yaml
+redshift-curator prepare configs/prepare/sdss_dr19.example.yaml
+redshift-curator inspect --path outputs/prepared/sdss_dr19.parquet
+redshift-curator curate configs/curate/sdss_dr19.example.yaml
 ```
 
-`inspect`, `inspect-fits`, `prepare`, and `curate` are functional. `qa`,
-`validate-flags`, and `run` are placeholders for later phases.
+Supported local examples live under:
 
-## Example
+- `configs/inspect/`
+- `configs/prepare/`
+- `configs/curate/`
+- `tests/data/raw/`
 
-The repository includes a small synthetic catalog at
-`tests/data/raw/synthetic_redshift_catalog.csv` and a matching config at
-`configs/inspect/synthetic.example.yaml`.
+## Documentation
 
-Running:
+Detailed documentation lives in `docs/`:
 
-```bash
-redshift-curator inspect configs/inspect/synthetic.example.yaml
-```
-
-writes:
-
-```text
-reports/SYNTHETIC_REDSHIFT/inspect_report.json
-reports/SYNTHETIC_REDSHIFT/inspect_report.md
-```
-
-The JSON report is the machine-readable audit artifact. The Markdown report is a
-human-readable summary with selected columns, dtypes, candidate columns,
-statistics, categorical values, sample rows, and warnings.
-
-For FITS catalogs, inspect the HDU structure before choosing `fits_hdu`:
-
-```bash
-redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
-```
-
-FITS inspection uses FITS headers first and avoids loading the selected HDU into
-a pandas DataFrame. For large uncompressed FITS files, statistics and sample rows
-are skipped by default unless configured explicitly. Large `.fits.gz` files are
-rejected for HDU inspection because gzip-compressed FITS cannot be memory-mapped
-efficiently; decompress them first, then run `inspect-fits` or `inspect` on the
-uncompressed `.fits` file.
-
-Large or repeated workflows should first normalize raw inputs to partitioned
-Parquet:
-
-```bash
-redshift-curator prepare configs/prepare/desi_deep_pilot.example.yaml
-redshift-curator prepare --path large_catalog.csv --output-dir prepared/large_catalog/ --overwrite
-```
-
-`prepare` reads small single files directly in memory, rejects large compressed
-files with a decompression suggestion, and uses Dask/chunked reading to write
-large CSV/TXT/DAT/IDZ, Parquet, and FITS inputs as multiple Parquet parts. Its
-`output_mode` can be `auto`, `single`, or `partitioned`: `auto` writes one part
-for small single-file inputs and partitioned output for large or multi-file
-inputs. For large or multi-file inputs, `output_mode: single` also requires
-`allow_large_single_output: true`.
-
-For quick inspection without writing a YAML config first, use defaults from the
-input path:
-
-```bash
-redshift-curator inspect --path tests/data/raw/6dfgs_sample.csv.gz
-redshift-curator inspect --path tests/data/raw/desi_deep_pilot_sample.fits --fits-hdu 1
-```
-
-For raw inputs at or above 100 MB, `inspect` now recommends running `prepare`
-first instead of inspecting the large source file directly. This keeps inspection
-lightweight and makes the prepared Parquet dataset the canonical input for later
-pipeline phases. Tune the threshold with `--dask-threshold-mb` or with
-`dask_threshold_mb` in YAML:
-
-```bash
-redshift-curator prepare --path large_catalog.csv --output-dir reports/prepared/large_catalog.parquet --overwrite
-redshift-curator inspect --path reports/prepared/large_catalog.parquet
-```
-
-Large compressed raw inputs are rejected with a decompression command suggestion
-before `prepare`. Advanced users can still opt into direct raw inspection with
-`--allow-large-raw-inspect` or `allow_large_raw_inspect: true` in YAML.
-
-Partitioned Parquet datasets are also accepted as input directories and are
-inspected through the PyArrow dataset path:
-
-```bash
-redshift-curator inspect --path converted_catalog/
-```
-
-Curated outputs are always written as Parquet datasets:
-
-```bash
-redshift-curator curate configs/curate/synthetic.example.yaml
-redshift-curator curate configs/curate/2dfgrs.example.yaml
-redshift-curator curate configs/curate/6dfgs.example.yaml
-```
-
-`curate` can read small raw catalogs directly in memory. For large inputs, use
-`prepare` first and pass the prepared Parquet dataset to `curate`. Curation
-configs can select and order output columns, add constant string columns, cast
-simple types, convert HMS/DMS coordinates to degrees, convert velocity to
-redshift, coalesce prioritized redshift candidates into one final column, and
-convert hourangle/degree coordinates with Astropy `SkyCoord`. Configs must
-identify the final RA and DEC columns under `coordinates` and the final redshift
-column under `redshift`. Curation stops early if those columns are non-numeric or
-outside RA `[0, 360)`, DEC `(-90, 90)`, and redshift `(-0.01, 15)`. Users can
-set `redshift.invalid_policy: flag` to map invalid redshifts to the standard
-`-1` flag instead of failing.
-
-Advanced users can configure the cluster in YAML:
-
-```yaml
-dask_threshold_mb: 250
-dask_cluster:
-  name: slurm
-  # Optional. Defaults to the command output directory plus logs/.
-  logs_dir: reports/slurm-logs
-  args:
-    instance:
-      cores: 4
-      processes: 2
-      memory: 8GB
-      queue: debug
-      account: my-account
-    scale:
-      minimum_jobs: 1
-      maximum_jobs: 4
-```
-
-The same executor schema can be passed through the CLI with `--dask-cluster`,
-although YAML is usually easier to review. SLURM clusters must be passed as a
-full dict with `args`; `--dask-cluster slurm` is intentionally rejected. SLURM
-configs require `args.instance.cores`, `args.instance.memory`, and
-`args.scale.minimum_jobs > 0`. If `logs_dir` is omitted, SLURM job logs are
-written under the command output directory in `logs/`:
-
-```bash
-redshift-curator inspect --path large_catalog.parquet \
-  --dask-cluster '{"name": "slurm", "logs_dir": "reports/slurm-logs", "args": {"instance": {"cores": 4, "processes": 1, "memory": "16GB", "queue": "cpu_bpglsst", "account": "hpc-bpglsst", "interface": "ib0"}, "scale": {"minimum_jobs": 1, "maximum_jobs": 4}}}'
-```
-
-For headerless whitespace files, pass column names explicitly. Short schemas can
-use `--column-names`; longer schemas are usually easier to review in YAML:
-
-```bash
-redshift-curator inspect --path sample.dat.gz --column-names '["RA", "Dec", "z"]'
-redshift-curator inspect configs/inspect/2dflens.example.yaml
-```
-
-To inspect only a reviewed subset of columns, pass `column_selection` in YAML:
-
-```yaml
-column_selection:
-  - RA
-  - DEC
-  - Z
-  - ZWARNING
-```
-
-The report keeps `n_columns` as the original catalog width and adds
-`n_columns_selected` for the subset used by `columns`, `dtypes`, candidates,
-sample rows, and statistics. The same selection can be passed through the CLI:
-
-```bash
-redshift-curator inspect --path catalog.fits \
-  --column-selection RA --column-selection DEC --column-selection Z
-
-redshift-curator inspect --path catalog.fits \
-  --column-selection-list '["RA", "DEC", "Z"]'
-
-redshift-curator inspect --path catalog.fits \
-  --stats-mode none --sample-max-columns 25
-```
+- `docs/inspect-schema.rst`
+- `docs/prepare-schema.rst`
+- `docs/curate-schema.rst`
+- `docs/curate-transformations.rst`
+- `docs/large-data.rst`
+- `docs/sample-data.md`
 
 ## Development
-
-Run tests and checks with:
 
 ```bash
 pytest -q
 pre-commit run --all-files
 ```
 
-Large or redistributability-unclear source catalogs should stay outside git.
-Small sample files that are safe to redistribute live under `tests/data/raw/`.
-
-## Scientific Naming
-
-Synthetic data in this repository is clearly named synthetic and is not
-associated with any real survey. Real survey names are used only for real source
-catalogs or local samples derived from those catalogs.
-
-Files without embedded column names require explicit column names, either with
-`column_names` in YAML or with `--column-name`/`--column-names` in the CLI. That
-list is user-supplied metadata and must match the number of columns in the file.
-Files that already include column names ignore `column_names`.
-
-See `docs/sample-data.md` for the current local sample-data convention.
+Large source catalogs and generated artifacts should not be committed. Small,
+redistributable fixtures used by tests live under `tests/data/raw/`.
