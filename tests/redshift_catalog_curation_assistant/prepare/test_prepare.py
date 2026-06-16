@@ -2,6 +2,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -36,6 +37,111 @@ def test_prepare_small_csv_writes_single_parquet(tmp_path):
     assert manifest["output_mode"] == "single"
 
 
+def test_prepare_rejects_hats_input_as_already_supported(tmp_path):
+    """Ensure prepare does not rewrite HATS inputs that are already supported downstream."""
+    hats_dir = tmp_path / "catalog"
+    hats_dir.mkdir()
+    (hats_dir / "hats.properties").write_text("obs_regime=Optical\n")
+
+    with pytest.raises(PrepareError, match="Input is already a HATS catalog"):
+        prepare_catalog(
+            {
+                "input_file": str(hats_dir),
+                "output_dir": str(tmp_path / "prepared"),
+            }
+        )
+
+
+def test_prepare_small_csv_can_write_hats_collection(tmp_path, monkeypatch):
+    """Ensure small inputs can be converted to HATS through LSDB."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,10.0,-1.0,0.1\n2,11.0,-1.1,0.2\n")
+    output_dir = tmp_path / "prepared_hats"
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    prepared = prepare_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "output_format": "hats",
+            "large_file_threshold_mb": 1,
+            "hats": {
+                "catalog_name": "toy",
+                "ra_column": "ra",
+                "dec_column": "dec",
+                "margin_threshold": 5.0,
+            },
+        }
+    )
+
+    assert prepared == output_dir
+    assert (output_dir / "collection.properties").exists()
+    assert (output_dir / "toy" / "hats.properties").exists()
+    assert (output_dir / "toy_5arcs" / "hats.properties").exists()
+    manifest = json.loads((output_dir / "_redshift_curator_manifest.json").read_text())
+    assert manifest["partition_format"] == "hats"
+    assert manifest["hats"]["ra_column"] == "ra"
+    assert manifest["hats"]["dec_column"] == "dec"
+
+
+def test_prepare_hats_requires_standard_coordinate_ranges(tmp_path, monkeypatch):
+    """Ensure HATS output rejects coordinates outside the standard degree ranges."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,360.0,-1.0,0.1\n2,11.0,-1.1,0.2\n")
+    output_dir = tmp_path / "prepared_hats"
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    with pytest.raises(
+        PrepareError,
+        match="HATS output requires RA/Dec already in standard degree ranges.*Use prepare to Parquet",
+    ):
+        prepare_catalog(
+            {
+                "input_file": str(csv),
+                "output_dir": str(output_dir),
+                "output_format": "hats",
+                "large_file_threshold_mb": 1,
+                "hats": {
+                    "catalog_name": "toy",
+                    "ra_column": "ra",
+                    "dec_column": "dec",
+                },
+            }
+        )
+
+
+def test_prepare_hats_requires_numeric_coordinates(tmp_path, monkeypatch):
+    """Ensure HATS output rejects non-numeric coordinate columns."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,10:00:00,-1.0,0.1\n2,11:00:00,-1.1,0.2\n")
+    output_dir = tmp_path / "prepared_hats"
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    with pytest.raises(
+        PrepareError,
+        match="HATS output requires RA/Dec already in standard degree ranges.*must be numeric",
+    ):
+        prepare_catalog(
+            {
+                "input_file": str(csv),
+                "output_dir": str(output_dir),
+                "output_format": "hats",
+                "large_file_threshold_mb": 1,
+                "hats": {
+                    "catalog_name": "toy",
+                    "ra_column": "ra",
+                    "dec_column": "dec",
+                },
+            }
+        )
+
+
 def test_prepare_large_csv_uses_dask_and_writes_partitioned_parquet(tmp_path, monkeypatch):
     """Ensure large CSV files are written through the Dask path."""
     import redshift_catalog_curation_assistant.prepare.prepare as prep
@@ -62,6 +168,135 @@ def test_prepare_large_csv_uses_dask_and_writes_partitioned_parquet(tmp_path, mo
 
     assert prepared == output_dir
     assert sorted(output_dir.glob("*.parquet"))
+
+
+def test_prepare_large_csv_can_write_hats_via_intermediate_parquet(tmp_path, monkeypatch):
+    """Ensure large HATS output uses temporary Parquet and removes it after import."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,10.0,-1.0,0.1\n2,11.0,-1.1,0.2\n")
+    output_dir = tmp_path / "prepared_hats"
+    calls = []
+
+    def fake_hats_import(parquet_dir, hats_output_dir, config, client, cluster_config):
+        calls.append((parquet_dir, hats_output_dir, config, client))
+        assert sorted(parquet_dir.glob("*.parquet"))
+        (hats_output_dir / "collection.properties").write_text("collection=toy\n")
+        catalog_dir = hats_output_dir / "toy"
+        catalog_dir.mkdir()
+        (catalog_dir / "hats.properties").write_text("catalog=toy\n")
+
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+    monkeypatch.setattr(prep, "_run_hats_import_from_parquet", fake_hats_import)
+
+    prepared = prepare_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "output_format": "hats",
+            "large_file_threshold_mb": 0,
+            "target_partition_size_mb": 1,
+            "hats": {
+                "catalog_name": "toy",
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "dask_cluster": {
+                "name": "local",
+                "args": {
+                    "processes": False,
+                },
+            },
+        }
+    )
+
+    assert prepared == output_dir
+    assert calls
+    assert not list(tmp_path.glob(".prepared_hats-parquet-*"))
+    manifest = json.loads((output_dir / "_redshift_curator_manifest.json").read_text())
+    assert manifest["partition_format"] == "hats"
+    assert manifest["output_mode"] == "hats"
+
+
+def test_prepare_large_hats_validates_coordinates_before_import(tmp_path, monkeypatch):
+    """Ensure invalid large-input coordinates stop before hats_import runs."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,-1.0,-1.0,0.1\n2,11.0,-1.1,0.2\n")
+    output_dir = tmp_path / "prepared_hats"
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    def fail_hats_import(*args):
+        raise AssertionError("hats_import should not run when coordinates are invalid")
+
+    monkeypatch.setattr(prep, "_run_hats_import_from_parquet", fail_hats_import)
+
+    with pytest.raises(
+        PrepareError,
+        match="HATS output requires RA/Dec already in standard degree ranges.*observed range",
+    ):
+        prepare_catalog(
+            {
+                "input_file": str(csv),
+                "output_dir": str(output_dir),
+                "output_format": "hats",
+                "large_file_threshold_mb": 0,
+                "target_partition_size_mb": 1,
+                "hats": {
+                    "catalog_name": "toy",
+                    "ra_column": "ra",
+                    "dec_column": "dec",
+                },
+                "dask_cluster": {
+                    "name": "local",
+                    "args": {
+                        "processes": False,
+                    },
+                },
+            }
+        )
+
+
+def test_prepare_parquet_directory_hats_validates_coordinates_before_import(tmp_path, monkeypatch):
+    """Ensure Parquet directory to HATS validates coordinates before hats_import."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    parquet_dir = tmp_path / "prepared_parquet"
+    parquet_dir.mkdir()
+    pd.DataFrame(
+        {
+            "object_id": [1, 2],
+            "ra": [10.0, 11.0],
+            "dec": [-90.0, -1.1],
+            "z": [0.1, 0.2],
+        }
+    ).to_parquet(parquet_dir / "part0.parquet")
+    output_dir = tmp_path / "prepared_hats"
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    def fail_hats_import(*args):
+        raise AssertionError("hats_import should not run when coordinates are invalid")
+
+    monkeypatch.setattr(prep, "_run_hats_import_from_parquet", fail_hats_import)
+
+    with pytest.raises(
+        PrepareError,
+        match="HATS output requires RA/Dec already in standard degree ranges.*observed range",
+    ):
+        prepare_catalog(
+            {
+                "input_file": str(parquet_dir),
+                "output_dir": str(output_dir),
+                "output_format": "hats",
+                "hats": {
+                    "catalog_name": "toy",
+                    "ra_column": "ra",
+                    "dec_column": "dec",
+                },
+            }
+        )
 
 
 def test_prepare_multi_file_auto_writes_partitioned_parquet(tmp_path, monkeypatch):
@@ -415,15 +650,23 @@ def test_prepare_fits_chunk_size_is_capped_by_target_partition_size():
         "configs/prepare/euclid_parquet_sample.example.yaml",
         "configs/prepare/sdss_dr19.example.yaml",
         "configs/prepare/synthetic.example.yaml",
+        "configs/prepare/synthetic_hats.example.yaml",
     ],
 )
-def test_prepare_versioned_sample_configs(config_path, tmp_path):
+def test_prepare_versioned_sample_configs(config_path, tmp_path, monkeypatch):
     """Verify every versioned prepare config remains executable."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
     config = yaml.safe_load(Path(config_path).read_text())
     config["output_dir"] = str(tmp_path / Path(config_path).stem)
     config["dask_cluster"] = None
 
     output_dir = prepare_catalog(config)
 
-    assert sorted(output_dir.glob("*.parquet"))
+    if config.get("output_format") == "hats":
+        assert (output_dir / "collection.properties").exists()
+    else:
+        assert sorted(output_dir.glob("*.parquet"))
     assert (output_dir / "_redshift_curator_manifest.json").exists()

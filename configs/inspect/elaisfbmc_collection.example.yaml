@@ -1,0 +1,20 @@
+input_file: tests/data/raw/elaisfbmc_collection
+survey_name: ELAISFBMC_COLLECTION
+output_dir: reports/ELAISFBMC_COLLECTION
+
+stats_mode: candidates
+sample_max_columns: 20
+sample_seed: 42
+
+column_patterns:
+  ra:
+    - "^RAdeg$"
+  dec:
+    - "^DEdeg$"
+  redshift:
+    - "^zbest$"
+    - "^zsp$"
+  quality:
+    - "^zbest_quality$"
+  object_type:
+    - "^zbest_type$"

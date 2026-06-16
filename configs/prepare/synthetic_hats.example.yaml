@@ -1,0 +1,20 @@
+input_file: tests/data/raw/synthetic_redshift_catalog.csv
+output_dir: reports/prepared/synthetic_hats
+output_format: hats
+large_file_threshold_mb: 100
+target_partition_size_mb: 100
+overwrite: true
+
+hats:
+  catalog_name: synthetic_redshift
+  ra_column: ra
+  dec_column: dec
+  margin_threshold: 5.0
+
+dask_cluster:
+  name: local
+  args:
+    n_workers: 1
+    threads_per_worker: 1
+    memory_limit: 6GB
+    dashboard_address:

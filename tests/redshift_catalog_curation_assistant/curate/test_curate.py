@@ -173,6 +173,107 @@ def test_curate_small_csv_selects_casts_adds_constant_and_writes_single_parquet(
     assert manifest["columns"] == df.columns.tolist()
 
 
+def test_curate_small_csv_can_write_hats_collection(tmp_path):
+    """Verify small raw inputs can be curated and written as HATS."""
+    import lsdb
+
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z,extra\n1,10.0,-1.0,0.1,drop\n2,11.0,-1.1,0.2,drop\n")
+    output_dir = tmp_path / "curated_hats"
+
+    curated = curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "output_format": "hats",
+            "column_selection": ["object_id", "ra", "dec", "z"],
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+            },
+            "hats": {
+                "catalog_name": "toy_curated",
+                "margin_threshold": 5.0,
+            },
+        }
+    )
+
+    assert curated == output_dir
+    assert (output_dir / "collection.properties").exists()
+    assert (output_dir / "toy_curated" / "hats.properties").exists()
+    catalog = lsdb.open_catalog(output_dir)
+    assert list(catalog.columns) == ["object_id", "ra", "dec", "z"]
+    manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
+    assert manifest["partition_format"] == "hats"
+    assert manifest["hats"]["ra_column"] == "ra"
+    assert manifest["hats"]["dec_column"] == "dec"
+
+
+def test_curate_hats_input_can_write_hats_collection(tmp_path, monkeypatch):
+    """Verify HATS inputs stay on the LSDB Catalog path and write HATS output."""
+    import lsdb
+
+    import redshift_catalog_curation_assistant.curate.curate as cur
+
+    output_dir = tmp_path / "curated_hats"
+    monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
+
+    curated = curate_catalog(
+        {
+            "input_file": "tests/data/raw/elaisfbmc_collection",
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "output_format": "hats",
+            "column_selection": ["ELAIS", "RAdeg", "DEdeg", "zbest"],
+            "coordinates": {
+                "ra_column": "RAdeg",
+                "dec_column": "DEdeg",
+            },
+            "redshift": {
+                "column": "zbest",
+            },
+            "transformations": [
+                {"type": "add_constant_column", "name": "curated_by", "value": "rcca"},
+            ],
+            "hats": {
+                "catalog_name": "elais_curated",
+            },
+        }
+    )
+
+    assert curated == output_dir
+    assert (output_dir / "collection.properties").exists()
+    assert (output_dir / "elais_curated" / "hats.properties").exists()
+    catalog = lsdb.open_catalog(output_dir)
+    assert list(catalog.columns) == ["ELAIS", "RAdeg", "DEdeg", "zbest", "curated_by"]
+    assert catalog.head(1)["curated_by"].tolist() == ["rcca"]
+    manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
+    assert manifest["partition_format"] == "hats"
+    assert manifest["output_mode"] == "hats"
+
+
+def test_curate_hats_input_requires_hats_output(tmp_path):
+    """Verify HATS input does not silently fall back to Parquet output."""
+    with pytest.raises(CurateError, match="HATS curate input currently requires output_format: hats"):
+        curate_catalog(
+            {
+                "input_file": "tests/data/raw/elaisfbmc_collection",
+                "output_dir": str(tmp_path / "curated"),
+                "coordinates": {
+                    "ra_column": "RAdeg",
+                    "dec_column": "DEdeg",
+                },
+                "redshift": {
+                    "column": "zbest",
+                },
+            }
+        )
+
+
 def test_curate_generated_columns_can_be_written_first(tmp_path):
     """Verify generated columns can be placed before selected source columns."""
     csv = tmp_path / "sample.csv"
@@ -899,6 +1000,67 @@ def test_curate_multi_parquet_large_input_writes_partitioned_output(tmp_path, mo
     assert manifest["output_mode"] == "partitioned"
 
 
+def test_curate_large_parquet_can_write_hats_via_intermediate_parquet(tmp_path, monkeypatch):
+    """Verify large Dask curate output can be imported into HATS."""
+    import redshift_catalog_curation_assistant.curate.curate as cur
+
+    parquet_input = tmp_path / "input.parquet"
+    pd.DataFrame(
+        {
+            "object_id": [1, 2],
+            "ra": [10.0, 11.0],
+            "dec": [-1.0, -1.1],
+            "z": [0.1, 0.2],
+        }
+    ).to_parquet(parquet_input)
+    output_dir = tmp_path / "curated_hats"
+    calls = []
+
+    def fake_hats_import(parquet_dir, hats_output_dir, config, client, cluster_config):
+        calls.append((parquet_dir, hats_output_dir, config, client))
+        assert sorted(parquet_dir.glob("*.parquet"))
+        (hats_output_dir / "collection.properties").write_text("collection=toy\n")
+        catalog_dir = hats_output_dir / "toy_curated"
+        catalog_dir.mkdir()
+        (catalog_dir / "hats.properties").write_text("catalog=toy\n")
+
+    monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
+    monkeypatch.setattr(cur, "_run_hats_import_from_parquet", fake_hats_import)
+
+    curated = curate_catalog(
+        {
+            "input_file": str(parquet_input),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "output_format": "hats",
+            "large_file_threshold_mb": 0,
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+            },
+            "hats": {
+                "catalog_name": "toy_curated",
+            },
+            "dask_cluster": {
+                "name": "local",
+                "args": {
+                    "processes": False,
+                },
+            },
+        }
+    )
+
+    assert curated == output_dir
+    assert calls
+    assert not list(tmp_path.glob(".curated_hats-parquet-*"))
+    manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
+    assert manifest["partition_format"] == "hats"
+    assert manifest["output_mode"] == "partitioned"
+
+
 def test_curate_large_raw_input_requires_prepare(tmp_path):
     """Verify large non-Parquet inputs fail with a prepare hint."""
     csv = tmp_path / "large.csv"
@@ -986,16 +1148,23 @@ def test_curate_2mrs_velocity_fixture(tmp_path):
         "configs/curate/2mrs.example.yaml",
         "configs/curate/6dfgs.example.yaml",
         "configs/curate/desi_deep_pilot.example.yaml",
+        "configs/curate/elaisfbmc_collection.example.yaml",
         "configs/curate/euclid_parquet_sample.example.yaml",
         "configs/curate/sdss_dr19.example.yaml",
     ],
 )
-def test_curate_versioned_sample_configs(config_path, tmp_path):
+def test_curate_versioned_sample_configs(config_path, tmp_path, monkeypatch):
     """Verify versioned curate configs remain executable on small fixtures."""
+    import redshift_catalog_curation_assistant.curate.curate as cur
+
+    monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
     config = load_curate_config(Path(config_path))
     config["output_dir"] = str(tmp_path / Path(config_path).stem)
 
     output_dir = curate_catalog(config)
 
-    assert sorted(output_dir.glob("*.parquet"))
+    if config.get("output_format") == "hats":
+        assert (output_dir / "collection.properties").exists()
+    else:
+        assert sorted(output_dir.glob("*.parquet"))
     assert (output_dir / "_redshift_curator_curation_manifest.json").exists()

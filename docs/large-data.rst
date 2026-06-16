@@ -35,6 +35,18 @@ as Dask delayed partitions for large FITS files.
 Use ``target_partition_size_mb`` to tune output partition size. For HPC testing,
 start conservatively and increase workers only after checking storage behavior.
 
+When ``output_format: hats`` is requested for large non-HATS inputs, ``prepare``
+first creates a temporary Parquet dataset, then imports it into a HATS
+collection with ``hats_import`` using ``file_reader: parquet``. The temporary
+Parquet dataset is removed after the HATS import. Inputs that are already HATS
+do not need ``prepare``.
+
+HATS output requires RA/Dec columns that are already numeric degrees in the
+standard HATS ranges: RA in ``[0, 360)`` and Dec in ``(-90, 90)``. ``prepare``
+validates those columns before invoking LSDB or ``hats_import``. Catalogs that
+need coordinate conversion should be prepared as Parquet, curated into standard
+coordinates, and only then written as HATS.
+
 Inspect
 -------
 
@@ -55,6 +67,10 @@ For FITS, they are scheduled by row chunk and column batch.
 If ``parallel_stats`` is not set, a configured ``dask_cluster`` does not change
 the Parquet/FITS inspect path. This keeps simple inspection lightweight.
 
+For HATS catalogs and collections, ``inspect`` always creates a Dask client and
+opens the input through ``lsdb.open_catalog()``. The HATS path stays on the
+public LSDB ``Catalog`` API for sampling and aggregate statistics.
+
 Curate
 ------
 
@@ -71,6 +87,15 @@ large Parquet inputs. For expensive transformations, set:
    persist_after_transformations: true
 
 This persists the transformed Dask dataframe before validation and writing.
+
+When ``output_format: hats`` is requested for large Parquet input, ``curate``
+writes the curated Dask dataframe to temporary Parquet and imports it with
+``hats_import``. The temporary Parquet dataset is removed after the HATS import.
+
+For HATS input, ``curate`` always creates a Dask client, opens the catalog with
+``lsdb.open_catalog()``, applies transformations through public LSDB
+``Catalog`` operations, and writes HATS with ``Catalog.write_catalog()``.
+HATS input currently requires HATS output.
 
 SLURM Example
 -------------
