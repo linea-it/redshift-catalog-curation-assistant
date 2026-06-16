@@ -91,6 +91,13 @@ repos:
     # `python -m pytest --cov=<package_name> --cov-report=xml`
   - repo: local
     hooks:
+      - id: sphinx-build
+        name: Build documentation
+        description: Build Sphinx documentation.
+        entry: python -m sphinx -b html docs /tmp/redshift-catalog-curation-assistant-docs
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: pytest-check
         name: Run unit tests
         description: Run unit tests with pytest.

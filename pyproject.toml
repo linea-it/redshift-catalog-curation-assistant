@@ -37,14 +37,32 @@ redshift-curator = "redshift_catalog_curation_assistant.cli.cli:main"
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)
 [project.optional-dependencies]
+docs = [
+    "ipykernel",
+    "ipython",
+    "jupytext",
+    "myst-parser",
+    "nbconvert",
+    "nbsphinx",
+    "sphinx",
+    "sphinx-autoapi",
+    "sphinx-copybutton",
+    "sphinx-rtd-theme>=3.1.0",
+]
 dev = [
     "asv[virtualenv]==0.6.5", # Used to compute performance benchmarks
     "jupyter>=1.0", # Clears output from Jupyter notebooks
+    "myst-parser", # Used to render Markdown documentation in Sphinx
     "mypy>=1.8", # Used for static type checking of files
+    "nbsphinx", # Used to render notebooks in Sphinx documentation
     "pre-commit>=3.5", # Used to run checks before finalizing a git commit
     "pytest>=7.4",
     "pytest-cov>=4.1", # Used to report total code coverage
     "ruff>=0.2.1", # Used for static linting of files
+    "sphinx", # Used to build project documentation
+    "sphinx-autoapi", # Used to build API reference documentation
+    "sphinx-copybutton", # Used for copy buttons on documentation code blocks
+    "sphinx-rtd-theme>=3.1.0", # Used as the documentation HTML theme
 ]
 
 [build-system]
@@ -116,6 +134,7 @@ known-first-party = ["redshift_catalog_curation_assistant"]
 
 [tool.mypy]
 python_version = "3.11"
+follow_imports = "skip"
 [tool.setuptools.package-data]
 redshift_catalog_curation_assistant = ["py.typed"]
 

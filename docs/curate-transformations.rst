@@ -53,7 +53,7 @@ error ``EV`` in km/s to redshift and redshift error.
 .. code-block:: yaml
 
    input_file: tests/data/raw/2mrs_sample.fits
-   output_dir: reports/curated/2mrs.parquet
+   output_dir: outputs/curated/2mrs.parquet
    fits_hdu: 1
 
    column_selection:
@@ -86,7 +86,7 @@ The sign of Dec is taken from the degree component.
 .. code-block:: yaml
 
    input_file: tests/data/raw/2dfgrs_sample.idz.gz
-   output_dir: reports/curated/2dfgrs.parquet
+   output_dir: outputs/curated/2dfgrs.parquet
 
    column_selection:
      - serial
@@ -125,7 +125,7 @@ by Astropy. The 6dFGS sample uses RA as hourangle and Dec as degrees.
 .. code-block:: yaml
 
    input_file: tests/data/raw/6dfgs_sample.csv.gz
-   output_dir: reports/curated/6dfgs.parquet
+   output_dir: outputs/curated/6dfgs.parquet
 
    column_selection:
      - SPECID

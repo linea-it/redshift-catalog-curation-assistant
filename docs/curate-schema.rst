@@ -12,7 +12,7 @@ Minimal Example
 .. code-block:: yaml
 
    input_file: tests/data/raw/synthetic_redshift_catalog.csv
-   output_dir: reports/curated/synthetic.parquet
+   output_dir: outputs/curated/synthetic.parquet
    overwrite: true
 
    column_selection:
@@ -77,6 +77,12 @@ Input And Output Options
 ``target_partition_size_mb``
   Target partition size used for large Parquet/Dask processing.
 
+``persist_after_transformations``
+  ``false`` by default. When ``true`` and the input is a large Parquet/Dask
+  dataframe, transformed data are persisted before standard RA, Dec, redshift
+  validation and output writing. This can avoid recomputing expensive
+  transformations.
+
 ``part_prefix``
   Prefix for generated Parquet part filenames. Defaults to the output
   directory name.
@@ -89,6 +95,14 @@ Input And Output Options
 
 ``dask_cluster``
   Optional executor configuration using the same schema as ``prepare``.
+
+Large Input Behavior
+--------------------
+
+Small inputs are curated in memory. Large inputs must be Parquet. For large
+Parquet inputs, ``curate`` uses Dask, column pushdown, partitioned output by
+default, and a single aggregate computation to validate RA, Dec, and redshift
+ranges.
 
 Redshift Policy
 ---------------
