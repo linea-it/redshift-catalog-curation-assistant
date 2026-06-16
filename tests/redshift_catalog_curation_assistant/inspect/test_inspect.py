@@ -7,6 +7,12 @@ import pandas as pd
 import pytest
 
 
+@contextmanager
+def fake_dask_client_context(cluster_config, logs_dir=None):
+    """Stand in for a Dask client without starting a real cluster."""
+    yield
+
+
 def test_default_patterns_cover_common_sample_columns():
     """Verify default patterns cover reusable column names without broad DEC false positives."""
     import redshift_catalog_curation_assistant.inspect.inspect as insp
@@ -295,7 +301,7 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
                 "args": {
                     "n_workers": 1,
                     "threads_per_worker": 1,
-                    "memory_limit": "2GB",
+                    "memory_limit": "6GB",
                     "processes": False,
                     "dashboard_address": None,
                 },
@@ -506,6 +512,38 @@ def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatc
     assert report["warnings"]
 
 
+def test_inspect_parquet_parallel_fragment_stats(tmp_path, monkeypatch):
+    """Verify Parquet stats can be computed through Dask fragment tasks."""
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "partitioned.parquet"
+    path.mkdir()
+    pd.DataFrame({"ra": [10.0, 11.0], "dec": [-1.0, -1.1], "z": [0.1, 0.2]}).to_parquet(
+        path / "part0.parquet"
+    )
+    pd.DataFrame({"ra": [12.0, 13.0], "dec": [-1.2, -1.3], "z": [0.3, 0.4]}).to_parquet(
+        path / "part1.parquet"
+    )
+
+    import redshift_catalog_curation_assistant.executor as executor
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    monkeypatch.setattr(executor, "dask_client_context", fake_dask_client_context)
+
+    outdir = insp.run_inspect_config(
+        {
+            "input_file": str(path),
+            "survey_name": "PARQUET_PARALLEL",
+            "parallel_stats": True,
+            "parquet_stats_batch_size": 2,
+        }
+    )
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert report["numeric_stats"]["z"]["count"] == 4
+    assert report["numeric_stats"]["z"]["mean"] == pytest.approx(0.25)
+    assert report["numeric_stats"]["ra"]["max"] == pytest.approx(13.0)
+
+
 def test_inspect_fits_uses_selective_sample_and_stats(tmp_path, monkeypatch):
     """Verify FITS inspection can sample and compute candidate stats selectively."""
     from astropy.io import fits
@@ -550,6 +588,52 @@ def test_inspect_fits_uses_selective_sample_and_stats(tmp_path, monkeypatch):
     assert set(report["numeric_stats"]) == {"RA", "DEC", "Z"}
     assert report["numeric_stats"]["Z"]["mean"] == pytest.approx(0.2)
     assert report["categorical_uniques"]["CLASS"] == ["GALAXY", "QSO"]
+
+
+def test_inspect_fits_parallel_chunk_stats(tmp_path, monkeypatch):
+    """Verify FITS stats can be computed through Dask row chunks."""
+    from astropy.io import fits
+    from astropy.table import Table
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "sample.fits"
+    fits.HDUList(
+        [
+            fits.PrimaryHDU(),
+            fits.BinTableHDU(
+                Table(
+                    {
+                        "RA": [10.0, 11.0, 12.0, 13.0],
+                        "DEC": [-1.0, -1.1, -1.2, -1.3],
+                        "Z": [0.1, 0.2, 0.3, 0.4],
+                        "CLASS": ["GALAXY", "QSO", "GALAXY", "STAR"],
+                    }
+                ),
+                name="CATALOG",
+            ),
+        ]
+    ).writeto(path)
+
+    import redshift_catalog_curation_assistant.executor as executor
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    monkeypatch.setattr(executor, "dask_client_context", fake_dask_client_context)
+
+    outdir = insp.run_inspect_config(
+        {
+            "input_file": str(path),
+            "survey_name": "FITS_PARALLEL",
+            "fits_hdu": 1,
+            "parallel_stats": True,
+            "fits_stats_batch_size": 2,
+            "fits_stats_chunk_rows": 2,
+        }
+    )
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert report["numeric_stats"]["Z"]["count"] == 4
+    assert report["numeric_stats"]["Z"]["mean"] == pytest.approx(0.25)
+    assert report["categorical_uniques"]["CLASS"] == ["GALAXY", "QSO", "STAR"]
 
 
 def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):

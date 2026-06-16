@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -150,6 +151,8 @@ def _validate_inspect_config(config: Any) -> dict[str, Any]:
     _validate_non_negative_int(config, "sample_max_columns")
     _validate_positive_int(config, "parquet_stats_batch_size")
     _validate_positive_int(config, "fits_stats_batch_size")
+    _validate_positive_int(config, "fits_stats_chunk_rows")
+    _validate_positive_int(config, "chunk_size_rows")
     _stats_mode(config)
 
     _validate_string_list(
@@ -184,6 +187,8 @@ def _validate_inspect_config(config: Any) -> dict[str, Any]:
         raise ValueError("dask_cluster must be a mapping. Use YAML for cluster configuration.")
     if "allow_large_raw_inspect" in config and not isinstance(config["allow_large_raw_inspect"], bool):
         raise ValueError("allow_large_raw_inspect must be a boolean.")
+    if "parallel_stats" in config and not isinstance(config["parallel_stats"], bool):
+        raise ValueError("parallel_stats must be a boolean.")
 
     return config
 
@@ -482,6 +487,112 @@ def _parquet_to_pandas(dataset: Any, columns: list[str], limit: int | None = Non
     return table.to_pandas()
 
 
+def _parallel_stats_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("parallel_stats", False))
+
+
+def _stats_partitions(
+    partial_stats: list[dict[str, dict[str, StatsValue]]],
+) -> dict[str, dict[str, StatsValue]]:
+    aggregates: dict[str, dict[str, float]] = {}
+    for stats in partial_stats:
+        for column, values in stats.items():
+            count = values.get("count") or 0
+            null_count = values.get("null_count") or 0
+            mean = values.get("mean")
+            std = values.get("std")
+            min_value = values.get("min")
+            max_value = values.get("max")
+            if not isinstance(count, int | float) or count <= 0:
+                aggregate = aggregates.setdefault(
+                    column,
+                    {
+                        "count": 0.0,
+                        "null_count": 0.0,
+                        "sum": 0.0,
+                        "sum_sq_delta": 0.0,
+                        "min": math.inf,
+                        "max": -math.inf,
+                    },
+                )
+                aggregate["null_count"] += float(null_count) if isinstance(null_count, int | float) else 0.0
+                continue
+
+            aggregate = aggregates.setdefault(
+                column,
+                {
+                    "count": 0.0,
+                    "null_count": 0.0,
+                    "sum": 0.0,
+                    "sum_sq_delta": 0.0,
+                    "min": math.inf,
+                    "max": -math.inf,
+                },
+            )
+            count_float = float(count)
+            mean_float = float(mean) if isinstance(mean, int | float) else 0.0
+            std_float = float(std) if isinstance(std, int | float) else 0.0
+            aggregate["count"] += count_float
+            aggregate["null_count"] += float(null_count) if isinstance(null_count, int | float) else 0.0
+            aggregate["sum"] += mean_float * count_float
+            if count_float > 1:
+                aggregate["sum_sq_delta"] += std_float**2 * (count_float - 1.0)
+            if isinstance(min_value, int | float):
+                aggregate["min"] = min(aggregate["min"], float(min_value))
+            if isinstance(max_value, int | float):
+                aggregate["max"] = max(aggregate["max"], float(max_value))
+
+    merged: dict[str, dict[str, StatsValue]] = {}
+    for column, aggregate in aggregates.items():
+        count = int(aggregate["count"])
+        null_count = int(aggregate["null_count"])
+        if count <= 0:
+            merged[column] = {
+                "count": 0,
+                "null_count": null_count,
+                "mean": None,
+                "std": None,
+                "min": None,
+                "max": None,
+            }
+            continue
+        mean = aggregate["sum"] / count
+        total_sum_sq_delta = aggregate["sum_sq_delta"]
+        for stats in partial_stats:
+            column_stats = stats.get(column)
+            if not column_stats:
+                continue
+            partial_count = column_stats.get("count") or 0
+            partial_mean = column_stats.get("mean")
+            if not isinstance(partial_count, int | float) or partial_count <= 0:
+                continue
+            if not isinstance(partial_mean, int | float):
+                continue
+            total_sum_sq_delta += float(partial_count) * (float(partial_mean) - mean) ** 2
+        merged[column] = {
+            "count": count,
+            "null_count": null_count,
+            "mean": mean,
+            "std": math.sqrt(total_sum_sq_delta / (count - 1)) if count > 1 else None,
+            "min": aggregate["min"] if aggregate["min"] != math.inf else None,
+            "max": aggregate["max"] if aggregate["max"] != -math.inf else None,
+        }
+    return merged
+
+
+def _merge_unique_partitions(partials: list[dict[str, list[str]]], limit: int) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for partial in partials:
+        for column, values in partial.items():
+            current = merged.setdefault(column, [])
+            for value in values:
+                if value not in current:
+                    current.append(value)
+                if len(current) >= limit:
+                    break
+    return merged
+
+
 def _parquet_stats_columns(
     schema: Any, columns: list[str], candidate_cols: list[str], config: dict[str, Any]
 ) -> tuple[list[str], list[str], list[str]]:
@@ -508,6 +619,31 @@ def _parquet_numeric_stats(
     return stats
 
 
+def _parquet_fragment_stats(fragment: Any, columns: list[str]) -> dict[str, dict[str, StatsValue]]:
+    table = fragment.to_table(columns=columns)
+    return gather_stats(table.to_pandas())
+
+
+def _parquet_numeric_stats_parallel(
+    dataset: Any, columns: list[str], batch_size: int
+) -> dict[str, dict[str, StatsValue]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    fragments = list(dataset.get_fragments())
+    for fragment in fragments:
+        for start in range(0, len(columns), batch_size):
+            batch_columns = columns[start : start + batch_size]
+            tasks.append(delayed(_parquet_fragment_stats)(fragment, batch_columns))
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _stats_partitions(partials)
+
+
 def _parquet_categorical_uniques(
     dataset: Any, columns: list[str], batch_size: int, limit: int
 ) -> dict[str, list[str]]:
@@ -519,6 +655,31 @@ def _parquet_categorical_uniques(
         batch_columns = columns[start : start + batch_size]
         uniques.update(gather_categorical_uniques(_parquet_to_pandas(dataset, batch_columns), limit=limit))
     return uniques
+
+
+def _parquet_fragment_uniques(fragment: Any, columns: list[str], limit: int) -> dict[str, list[str]]:
+    table = fragment.to_table(columns=columns)
+    return gather_categorical_uniques(table.to_pandas(), limit=limit)
+
+
+def _parquet_categorical_uniques_parallel(
+    dataset: Any, columns: list[str], batch_size: int, limit: int
+) -> dict[str, list[str]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    fragments = list(dataset.get_fragments())
+    for fragment in fragments:
+        for start in range(0, len(columns), batch_size):
+            batch_columns = columns[start : start + batch_size]
+            tasks.append(delayed(_parquet_fragment_uniques)(fragment, batch_columns, limit))
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _merge_unique_partitions(partials, limit=limit)
 
 
 def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -550,13 +711,28 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
     categorical_cols = [column for column in categorical_cols if column in columns]
     warnings.extend(stats_warnings)
     dtypes = _parquet_dtypes(schema)
-    numeric_stats = _parquet_numeric_stats(dataset, numeric_cols, batch_size)
-    categorical_uniques = _parquet_categorical_uniques(
-        dataset,
-        categorical_cols,
-        batch_size=batch_size,
-        limit=int(config.get("unique_limit", 10)),
-    )
+    unique_limit = int(config.get("unique_limit", 10))
+    if _parallel_stats_enabled(config):
+        from ..executor import dask_client_context, dask_cluster_config
+
+        cluster_config = dask_cluster_config(config)
+        logs_dir = _dask_logs_dir(cluster_config, Path("reports") / survey)
+        with dask_client_context(cluster_config, logs_dir=logs_dir):
+            numeric_stats = _parquet_numeric_stats_parallel(dataset, numeric_cols, batch_size)
+            categorical_uniques = _parquet_categorical_uniques_parallel(
+                dataset,
+                categorical_cols,
+                batch_size=batch_size,
+                limit=unique_limit,
+            )
+    else:
+        numeric_stats = _parquet_numeric_stats(dataset, numeric_cols, batch_size)
+        categorical_uniques = _parquet_categorical_uniques(
+            dataset,
+            categorical_cols,
+            batch_size=batch_size,
+            limit=unique_limit,
+        )
     warnings.extend(_semantic_warnings(candidates, _parquet_numeric_columns(schema), numeric_stats))
 
     return {
@@ -651,6 +827,49 @@ def _fits_numeric_stats(
     return stats
 
 
+def _fits_chunk_dataframe(
+    input_path: str, fits_hdu: int, columns: list[str], start: int, stop: int
+) -> pd.DataFrame:
+    import fitsio
+
+    with fitsio.FITS(input_path) as fits_file:
+        data = fits_file[fits_hdu].read(columns=columns, rows=range(start, stop))
+    return pd.DataFrame({column: np.asarray(data[column]) for column in columns})
+
+
+def _fits_chunk_stats(
+    input_path: str, fits_hdu: int, columns: list[str], start: int, stop: int
+) -> dict[str, dict[str, StatsValue]]:
+    return gather_stats(_fits_chunk_dataframe(input_path, fits_hdu, columns, start, stop))
+
+
+def _fits_numeric_stats_parallel(
+    input_path: Path,
+    fits_hdu: int,
+    n_rows: int,
+    columns: list[str],
+    batch_size: int,
+    chunk_rows: int,
+) -> dict[str, dict[str, StatsValue]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    for row_start in range(0, n_rows, chunk_rows):
+        row_stop = min(row_start + chunk_rows, n_rows)
+        for column_start in range(0, len(columns), batch_size):
+            batch_columns = columns[column_start : column_start + batch_size]
+            tasks.append(
+                delayed(_fits_chunk_stats)(str(input_path), fits_hdu, batch_columns, row_start, row_stop)
+            )
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _stats_partitions(partials)
+
+
 def _fits_categorical_uniques(
     fits_hdu: Any, columns: list[str], batch_size: int, limit: int
 ) -> dict[str, list[str]]:
@@ -661,6 +880,43 @@ def _fits_categorical_uniques(
         batch_df = pd.DataFrame({column: np.asarray(data[column]) for column in batch_columns})
         uniques.update(gather_categorical_uniques(batch_df, limit=limit))
     return uniques
+
+
+def _fits_chunk_uniques(
+    input_path: str, fits_hdu: int, columns: list[str], start: int, stop: int, limit: int
+) -> dict[str, list[str]]:
+    frame = _fits_chunk_dataframe(input_path, fits_hdu, columns, start, stop)
+    return gather_categorical_uniques(frame, limit)
+
+
+def _fits_categorical_uniques_parallel(
+    input_path: Path,
+    fits_hdu: int,
+    n_rows: int,
+    columns: list[str],
+    batch_size: int,
+    chunk_rows: int,
+    limit: int,
+) -> dict[str, list[str]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    for row_start in range(0, n_rows, chunk_rows):
+        row_stop = min(row_start + chunk_rows, n_rows)
+        for column_start in range(0, len(columns), batch_size):
+            batch_columns = columns[column_start : column_start + batch_size]
+            tasks.append(
+                delayed(_fits_chunk_uniques)(
+                    str(input_path), fits_hdu, batch_columns, row_start, row_stop, limit
+                )
+            )
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _merge_unique_partitions(partials, limit=limit)
 
 
 def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -715,19 +971,47 @@ def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) ->
         if batch_size <= 0:
             msg = "fits_stats_batch_size must be greater than zero. This option is available in YAML config."
             raise ValueError(msg)
-        numeric_stats = _fits_numeric_stats(hdu, scalar_numeric_cols, batch_size)
-        categorical_uniques = _fits_categorical_uniques(
-            hdu,
-            scalar_categorical_cols,
-            batch_size=batch_size,
-            limit=int(config.get("unique_limit", 10)),
-        )
+        n_rows = int(header.get("NAXIS2", 0) or 0)
+        unique_limit = int(config.get("unique_limit", 10))
+        if _parallel_stats_enabled(config):
+            from ..executor import dask_client_context, dask_cluster_config
+
+            cluster_config = dask_cluster_config(config)
+            chunk_rows = int(config.get("fits_stats_chunk_rows", config.get("chunk_size_rows", 200_000)))
+            with dask_client_context(
+                cluster_config, logs_dir=_dask_logs_dir(cluster_config, Path("reports") / survey)
+            ):
+                numeric_stats = _fits_numeric_stats_parallel(
+                    input_path,
+                    fits_hdu,
+                    n_rows,
+                    scalar_numeric_cols,
+                    batch_size,
+                    chunk_rows,
+                )
+                categorical_uniques = _fits_categorical_uniques_parallel(
+                    input_path,
+                    fits_hdu,
+                    n_rows,
+                    scalar_categorical_cols,
+                    batch_size,
+                    chunk_rows,
+                    unique_limit,
+                )
+        else:
+            numeric_stats = _fits_numeric_stats(hdu, scalar_numeric_cols, batch_size)
+            categorical_uniques = _fits_categorical_uniques(
+                hdu,
+                scalar_categorical_cols,
+                batch_size=batch_size,
+                limit=unique_limit,
+            )
         warnings.extend(_semantic_warnings(candidates, _fits_numeric_columns(formats), numeric_stats))
 
         return {
             "survey": survey,
             "input_file": str(input_path),
-            "n_rows": int(header.get("NAXIS2", 0) or 0),
+            "n_rows": n_rows,
             "n_columns": len(all_columns),
             "n_columns_selected": len(columns),
             "columns": columns,

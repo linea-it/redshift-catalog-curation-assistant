@@ -11,9 +11,9 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_DASK_CLUSTER_CONFIG: dict[str, Any] = {
     "name": "local",
     "args": {
-        "n_workers": 3,
+        "n_workers": 1,
         "threads_per_worker": 1,
-        "memory_limit": "2GB",
+        "memory_limit": "6GB",
         "dashboard_address": None,
     },
 }

@@ -334,6 +334,7 @@ def _validate_config(config: Any) -> dict[str, Any]:
         raise CurateError("curate config requires a non-empty output_dir.")
     _validate_optional_bool(config, "overwrite")
     _validate_optional_bool(config, "allow_large_single_output")
+    _validate_optional_bool(config, "persist_after_transformations")
     _validate_optional_non_negative_number(config, "large_file_threshold_mb")
     _validate_optional_non_negative_number(config, "dask_threshold_mb")
     _validate_optional_positive_number(config, "target_partition_size_mb")
@@ -842,6 +843,101 @@ def _validate_redshift(df: Any, config: dict[str, Any]) -> tuple[Any, str]:
     return df, column
 
 
+def _standard_column_ranges(
+    df: Any, ra_column: str, dec_column: str, redshift_column: str
+) -> tuple[
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    int,
+]:
+    ra_values = pd.to_numeric(df[ra_column], errors="raise")
+    dec_values = pd.to_numeric(df[dec_column], errors="raise")
+    redshift_values = pd.to_numeric(df[redshift_column], errors="raise")
+    invalid_redshift_mask = ~_valid_redshift_mask(redshift_values)
+
+    if hasattr(ra_values, "compute"):
+        import dask
+
+        values = dask.compute(
+            ra_values.min(),
+            ra_values.max(),
+            dec_values.min(),
+            dec_values.max(),
+            redshift_values.min(),
+            redshift_values.max(),
+            invalid_redshift_mask.sum(),
+        )
+        return (
+            float(values[0]),
+            float(values[1]),
+            float(values[2]),
+            float(values[3]),
+            float(values[4]),
+            float(values[5]),
+            int(values[6]),
+        )
+
+    return (
+        float(ra_values.min()),
+        float(ra_values.max()),
+        float(dec_values.min()),
+        float(dec_values.max()),
+        float(redshift_values.min()),
+        float(redshift_values.max()),
+        int(invalid_redshift_mask.sum()),
+    )
+
+
+def _validate_standard_columns(df: Any, config: dict[str, Any]) -> tuple[Any, str, str, str]:
+    ra_column, dec_column = _coordinate_config(config)
+    redshift_column, invalid_policy, invalid_value = _redshift_config(config)
+    _ensure_columns(df, [ra_column], "RA validation")
+    _ensure_columns(df, [dec_column], "DEC validation")
+    _ensure_columns(df, [redshift_column], "redshift validation")
+
+    try:
+        ra_min, ra_max, dec_min, dec_max, z_min, z_max, invalid_redshift_count = _standard_column_ranges(
+            df,
+            ra_column,
+            dec_column,
+            redshift_column,
+        )
+    except Exception as exc:
+        raise CurateError(
+            "Configured RA, DEC, and redshift columns must be numeric before curation output. "
+            "Use a supported coordinate conversion transformation or redshift transformation, "
+            "then validate the generated columns."
+        ) from exc
+
+    if ra_min < RA_MIN_DEG or ra_max >= RA_MAX_DEG:
+        raise CurateError(
+            f"RA column '{ra_column}' is outside the required range [{RA_MIN_DEG}, {RA_MAX_DEG}). "
+            f"Observed range: [{ra_min}, {ra_max}]. "
+            "Use a supported coordinate conversion transformation and validate the generated column."
+        )
+    if dec_min <= DEC_MIN_DEG or dec_max >= DEC_MAX_DEG:
+        raise CurateError(
+            f"DEC column '{dec_column}' is outside the required range ({DEC_MIN_DEG}, {DEC_MAX_DEG}). "
+            f"Observed range: [{dec_min}, {dec_max}]. "
+            "Use a supported coordinate conversion transformation and validate the generated column."
+        )
+    if invalid_redshift_count and invalid_policy == "fail":
+        raise CurateError(
+            f"Redshift column '{redshift_column}' is outside the required range "
+            f"({REDSHIFT_MIN}, {REDSHIFT_MAX}). "
+            f"Observed range: [{z_min}, {z_max}]. "
+            "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
+            "or set redshift.invalid_policy: flag to map invalid values to -1."
+        )
+    if invalid_redshift_count:
+        df = _flag_invalid_redshifts(df, redshift_column, invalid_value)
+    return df, ra_column, dec_column, redshift_column
+
+
 def _final_columns(
     df: Any,
     config: dict[str, Any],
@@ -953,16 +1049,25 @@ def curate_catalog(config: dict[str, Any]) -> Path:
 
     df, is_dask = _read_input(input_paths, cfg, threshold_bytes)
     df, generated_columns = _apply_transformations(df, cfg)
-    ra_column, dec_column = _validate_coordinates(df, cfg)
-    df, redshift_column = _validate_redshift(df, cfg)
-    final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
-    df = df[final_columns]
 
     output_mode = _resolve_output_mode(cfg, is_small_input=is_small_input)
     _prepare_output_dir(output_dir, overwrite=bool(cfg.get("overwrite", False)))
+    if is_dask:
+        cluster_config = dask_cluster_config(cfg)
+        with dask_client_context(cluster_config, logs_dir=output_dir / "logs"):
+            if bool(cfg.get("persist_after_transformations", False)):
+                df = df.persist()
+            df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
+            final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
+            df = df[final_columns]
+            n_partitions = _write_partitioned_parquet(df, output_dir, prefix, output_mode)
+    else:
+        df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
+        final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
+        df = df[final_columns]
     if output_mode == "single" and not is_dask:
         n_partitions = _write_single_parquet(df, output_dir, prefix)
-    else:
+    elif not is_dask:
         cluster_config = dask_cluster_config(cfg)
         with dask_client_context(cluster_config, logs_dir=output_dir / "logs"):
             n_partitions = _write_partitioned_parquet(df, output_dir, prefix, output_mode)
