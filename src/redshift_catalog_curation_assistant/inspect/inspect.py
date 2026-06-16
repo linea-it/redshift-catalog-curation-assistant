@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from ..hats import is_hats_input
 from ..io import DEFAULT_DASK_THRESHOLD_BYTES
 
 PARQUET_SUFFIXES = {".parquet", ".pq"}
@@ -153,6 +154,7 @@ def _validate_inspect_config(config: Any) -> dict[str, Any]:
     _validate_positive_int(config, "fits_stats_batch_size")
     _validate_positive_int(config, "fits_stats_chunk_rows")
     _validate_positive_int(config, "chunk_size_rows")
+    _validate_positive_int(config, "sample_seed")
     _stats_mode(config)
 
     _validate_string_list(
@@ -751,6 +753,126 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
     }
 
 
+def _hats_select_columns(catalog: Any, columns: list[str]) -> Any:
+    drop_columns = [column for column in catalog.columns if column not in set(columns)]
+    if not drop_columns:
+        return catalog
+    return catalog.drop(columns=drop_columns)
+
+
+def _hats_sample(catalog: Any, columns: list[str], n_rows: int, seed: int) -> pd.DataFrame:
+    if not columns:
+        return pd.DataFrame()
+    sampled = _hats_select_columns(catalog, columns).random_sample(n=n_rows, seed=seed)
+    return pd.DataFrame(sampled)
+
+
+def _hats_numeric_columns(dtypes: pd.Series) -> list[str]:
+    return [column for column, dtype in dtypes.items() if pd.api.types.is_numeric_dtype(dtype)]
+
+
+def _hats_categorical_columns(dtypes: pd.Series) -> list[str]:
+    return [column for column, dtype in dtypes.items() if not pd.api.types.is_numeric_dtype(dtype)]
+
+
+def _hats_numeric_stats(catalog: Any, columns: list[str]) -> dict[str, dict[str, StatsValue]]:
+    if not columns:
+        return {}
+    stats_frame = catalog.aggregate_column_statistics(include_columns=columns)
+    stats: dict[str, dict[str, StatsValue]] = {}
+    for column in columns:
+        if column not in stats_frame.index:
+            continue
+        row = stats_frame.loc[column]
+        row_count = int(row.get("row_count", 0) or 0)
+        null_count = int(row.get("null_count", 0) or 0)
+        count = max(row_count - null_count, 0)
+        stats[column] = {
+            "count": count,
+            "null_count": null_count,
+            "mean": None,
+            "std": None,
+            "min": float(row["min_value"]) if count else None,
+            "max": float(row["max_value"]) if count else None,
+        }
+    return stats
+
+
+def _hats_categorical_uniques(
+    catalog: Any, columns: list[str], limit: int, seed: int
+) -> dict[str, list[str]]:
+    if not columns:
+        return {}
+    sample = _hats_sample(catalog, columns, n_rows=max(limit * 5, limit), seed=seed)
+    return gather_categorical_uniques(sample, limit=limit)
+
+
+def _build_hats_report(input_path: Path, survey: str, config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        import lsdb
+    except ImportError as exc:
+        raise RuntimeError(
+            "lsdb is required to inspect HATS catalogs. Install the project with LSDB."
+        ) from exc
+
+    catalog = lsdb.open_catalog(input_path)
+    all_columns = list(catalog.columns)
+    columns, warnings = _selected_report_columns(all_columns, config)
+    patterns = build_patterns(config)
+    candidates = candidate_columns(columns, patterns)
+    candidate_cols = _flatten_candidates(candidates)
+    dtypes = catalog.dtypes
+
+    sample_columns = _sample_columns(columns, candidate_cols, config)
+    if len(sample_columns) < len(columns):
+        warnings.append(
+            f"HATS sample was limited to {len(sample_columns)} of {len(columns)} columns. "
+            "Increase 'sample_max_columns' in YAML, or pass --sample-max-columns in the CLI."
+        )
+    seed = int(config.get("sample_seed", 42))
+    sample = _hats_sample(catalog, sample_columns, n_rows=5, seed=seed)
+
+    numeric_columns = [column for column in _hats_numeric_columns(dtypes) if column in columns]
+    categorical_columns = [column for column in _hats_categorical_columns(dtypes) if column in columns]
+    numeric_cols, categorical_cols, stats_warnings = _selected_stats_columns(
+        columns,
+        numeric_columns=numeric_columns,
+        categorical_columns=categorical_columns,
+        candidate_cols=candidate_cols,
+        config=config,
+        input_kind="HATS",
+    )
+    warnings.extend(stats_warnings)
+    numeric_stats = _hats_numeric_stats(catalog, numeric_cols)
+    categorical_uniques = _hats_categorical_uniques(
+        catalog,
+        categorical_cols,
+        limit=int(config.get("unique_limit", 10)),
+        seed=seed,
+    )
+    if categorical_cols:
+        warnings.append(
+            "HATS categorical unique values were estimated from an LSDB random_sample, not a full scan."
+        )
+    warnings.extend(_semantic_warnings(candidates, numeric_columns, numeric_stats))
+
+    return {
+        "survey": survey,
+        "input_file": str(input_path),
+        "input_format": "hats",
+        "n_rows": int(len(catalog)),
+        "n_columns": len(all_columns),
+        "n_columns_selected": len(columns),
+        "columns": columns,
+        "dtypes": {column: str(dtypes[column]) for column in columns},
+        "candidates": candidates,
+        "numeric_stats": numeric_stats,
+        "categorical_uniques": categorical_uniques,
+        "sample": sample.to_dict(orient="records"),
+        "warnings": warnings,
+    }
+
+
 def _fits_table_column_names(header: Any) -> list[str]:
     n_columns = int(header.get("TFIELDS", 0) or 0)
     return [str(header.get(f"TTYPE{index}", f"COL{index}")) for index in range(1, n_columns + 1)]
@@ -1263,6 +1385,16 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
     input_path = Path(cfg["input_file"])
     survey = cfg.get("survey_name", input_path.stem)
     outdir = Path(cfg["output_dir"]) if cfg.get("output_dir") is not None else Path("reports") / survey
+
+    if is_hats_input(input_path):
+        from ..executor import dask_client_context, dask_cluster_config
+
+        cluster_config = dask_cluster_config(cfg)
+        with dask_client_context(cluster_config, logs_dir=_dask_logs_dir(cluster_config, outdir)):
+            report = _build_hats_report(input_path, survey, cfg)
+        outdir.mkdir(parents=True, exist_ok=True)
+        _write_report(outdir, survey, input_path, report)
+        return outdir
 
     if _is_parquet_input(input_path):
         report = _build_parquet_report(input_path, survey, cfg)

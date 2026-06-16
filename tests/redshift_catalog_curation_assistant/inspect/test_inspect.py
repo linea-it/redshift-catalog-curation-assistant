@@ -659,6 +659,52 @@ def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):
     assert report["categorical_uniques"] == {}
 
 
+def test_inspect_hats_catalog_uses_lsdb_with_dask_client(tmp_path, monkeypatch):
+    """Verify HATS inspection opens LSDB catalogs under a Dask client context."""
+    repo_root = Path(__file__).resolve().parents[3]
+    monkeypatch.chdir(repo_root)
+    calls = []
+
+    @contextmanager
+    def tracking_dask_client_context(cluster_config, logs_dir=None):
+        calls.append({"cluster_config": cluster_config, "logs_dir": logs_dir})
+        yield
+
+    import redshift_catalog_curation_assistant.executor as executor
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    monkeypatch.setattr(executor, "dask_client_context", tracking_dask_client_context)
+
+    outdir = insp.run_inspect_config(
+        {
+            "input_file": "tests/data/raw/elaisfbmc_collection",
+            "survey_name": "ELAISFBMC_COLLECTION",
+            "output_dir": str(tmp_path / "hats-report"),
+            "stats_mode": "candidates",
+            "sample_max_columns": 8,
+            "sample_seed": 1,
+            "column_patterns": {
+                "ra": ["^RAdeg$"],
+                "dec": ["^DEdeg$"],
+                "redshift": ["^zbest$"],
+                "quality": ["^zbest_quality$"],
+            },
+        }
+    )
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert calls
+    assert report["input_format"] == "hats"
+    assert report["n_rows"] == 3762
+    assert report["n_columns"] == 85
+    assert report["candidates"]["ra"] == ["RAdeg"]
+    assert report["candidates"]["dec"] == ["DEdeg"]
+    assert report["candidates"]["redshift"] == ["zbest"]
+    assert report["numeric_stats"]["zbest"]["count"] > 0
+    assert len(report["sample"]) <= 5
+    assert set(report["sample"][0]).issubset(set(report["columns"]))
+
+
 @pytest.mark.parametrize(
     ("config_path", "survey", "n_rows"),
     [
@@ -667,6 +713,7 @@ def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):
         ("configs/inspect/2mrs.example.yaml", "2MRS", 1000),
         ("configs/inspect/6dfgs.example.yaml", "6DFGS", 1000),
         ("configs/inspect/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 1000),
+        ("configs/inspect/elaisfbmc_collection.example.yaml", "ELAISFBMC_COLLECTION", 3762),
         ("configs/inspect/euclid_parquet_sample.example.yaml", "EUCLID_PARQUET_SAMPLE", 1000),
         ("configs/inspect/sdss_dr19.example.yaml", "SDSS_DR19_SPALL", 1000),
         ("configs/inspect/synthetic.example.yaml", "SYNTHETIC_REDSHIFT", 5),
@@ -677,7 +724,10 @@ def test_inspect_versioned_sample_configs(config_path, survey, n_rows, tmp_path,
     repo_root = Path(__file__).resolve().parents[3]
     monkeypatch.chdir(repo_root)
 
+    import redshift_catalog_curation_assistant.executor as executor
     import redshift_catalog_curation_assistant.inspect as insp
+
+    monkeypatch.setattr(executor, "dask_client_context", fake_dask_client_context)
 
     outdir = insp.run_inspect(Path(config_path))
     report = json.loads((outdir / "inspect_report.json").read_text())

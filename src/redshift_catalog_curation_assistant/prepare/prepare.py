@@ -1,5 +1,6 @@
 import json
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,16 @@ import yaml
 from dask import delayed
 
 from ..executor import dask_client_context, dask_cluster_config
+from ..hats import (
+    HATS_COORDINATE_ERROR,
+    hats_catalog_name,
+    hats_margin_threshold,
+    hats_ra_dec_columns_required,
+    hats_sort_columns,
+    is_hats_input,
+    run_hats_import_from_parquet,
+    write_hats_from_dataframe,
+)
 from ..io import DEFAULT_DASK_THRESHOLD_BYTES, read_table
 
 COMPRESSED_SUFFIXES = {".gz", ".bz2", ".xz", ".zip"}
@@ -19,6 +30,7 @@ TEXT_SUFFIXES = {".csv", ".txt", ".dat", ".idz"}
 DEFAULT_CHUNK_SIZE_ROWS = 200_000
 DEFAULT_TARGET_PARTITION_SIZE_MB = 100
 OUTPUT_MODES = {"auto", "single", "partitioned"}
+OUTPUT_FORMATS = {"parquet", "hats"}
 
 
 class PrepareError(ValueError):
@@ -63,6 +75,64 @@ def _output_mode(config: dict[str, Any]) -> str:
     return output_mode
 
 
+def _output_format(config: dict[str, Any]) -> str:
+    output_format = str(config.get("output_format", "parquet")).lower()
+    if output_format not in OUTPUT_FORMATS:
+        raise PrepareError("output_format must be one of: parquet, hats.")
+    return output_format
+
+
+def _hats_ra_dec_columns(config: dict[str, Any]) -> tuple[str, str]:
+    return hats_ra_dec_columns_required(config, PrepareError)
+
+
+def _hats_catalog_name(output_dir: Path, config: dict[str, Any]) -> str:
+    return hats_catalog_name(output_dir, config, PrepareError)
+
+
+def _hats_margin_threshold(config: dict[str, Any]) -> float:
+    return hats_margin_threshold(config, PrepareError)
+
+
+def _hats_sort_columns(config: dict[str, Any]) -> str | None:
+    return hats_sort_columns(config, PrepareError)
+
+
+def _hats_coordinate_range(values: Any) -> tuple[int, float, float]:
+    count = values.count()
+    min_value = values.min()
+    max_value = values.max()
+    if hasattr(min_value, "compute"):
+        import dask
+
+        count, min_value, max_value = dask.compute(count, min_value, max_value)
+    return int(count), float(min_value), float(max_value)
+
+
+def _validate_hats_coordinate_columns(df: Any, config: dict[str, Any]) -> None:
+    ra_column, dec_column = _hats_ra_dec_columns(config)
+    missing = [column for column in [ra_column, dec_column] if column not in df.columns]
+    if missing:
+        raise PrepareError(f"{HATS_COORDINATE_ERROR} Missing coordinate columns: {', '.join(missing)}.")
+
+    for column, label in [(ra_column, "RA"), (dec_column, "Dec")]:
+        if not pd.api.types.is_numeric_dtype(df[column].dtype):
+            raise PrepareError(f"{HATS_COORDINATE_ERROR} {label} column '{column}' must be numeric.")
+
+    ra_count, ra_min, ra_max = _hats_coordinate_range(df[ra_column])
+    dec_count, dec_min, dec_max = _hats_coordinate_range(df[dec_column])
+    if ra_count <= 0 or dec_count <= 0:
+        raise PrepareError(f"{HATS_COORDINATE_ERROR} Coordinate columns must contain non-null values.")
+    if ra_min < 0.0 or ra_max >= 360.0:
+        raise PrepareError(
+            f"{HATS_COORDINATE_ERROR} RA column '{ra_column}' observed range: [{ra_min}, {ra_max}]."
+        )
+    if dec_min <= -90.0 or dec_max >= 90.0:
+        raise PrepareError(
+            f"{HATS_COORDINATE_ERROR} Dec column '{dec_column}' observed range: [{dec_min}, {dec_max}]."
+        )
+
+
 def _data_suffix(path: Path) -> str:
     suffixes = [suffix.lower() for suffix in path.suffixes]
     data_suffixes = [suffix for suffix in suffixes if suffix not in COMPRESSED_SUFFIXES]
@@ -98,6 +168,16 @@ def _check_large_compressed(path: Path, threshold_bytes: int) -> None:
     raise PrepareError(msg)
 
 
+def _total_input_size(paths: list[Path]) -> int:
+    total = 0
+    for path in paths:
+        if path.is_dir():
+            total += sum(part.stat().st_size for part in path.rglob("*") if part.is_file())
+        else:
+            total += path.stat().st_size
+    return total
+
+
 def _as_paths(paths: list[str | Path]) -> list[Path]:
     return [Path(path) for path in paths]
 
@@ -110,10 +190,11 @@ def _write_manifest(
     n_partitions: int,
     output_mode: str,
 ) -> None:
+    output_format = _output_format(config)
     manifest = {
         "source_paths": [str(path) for path in input_paths],
         "source_format": input_format,
-        "partition_format": "parquet",
+        "partition_format": output_format,
         "requested_output_mode": _output_mode(config),
         "output_mode": output_mode,
         "n_partitions": n_partitions,
@@ -126,6 +207,14 @@ def _write_manifest(
     }
     if "fits_hdu" in config:
         manifest["fits_hdu"] = int(config["fits_hdu"])
+    if output_format == "hats":
+        manifest["hats"] = {
+            "catalog_name": _hats_catalog_name(output_dir, config),
+            "ra_column": _hats_ra_dec_columns(config)[0],
+            "dec_column": _hats_ra_dec_columns(config)[1],
+            "margin_threshold": _hats_margin_threshold(config),
+            "sort_columns": _hats_sort_columns(config),
+        }
     (output_dir / "_redshift_curator_manifest.json").write_text(json.dumps(manifest, indent=2))
 
 
@@ -300,6 +389,19 @@ def _tabular_to_dask_dataframe(paths: list[Path], config: dict[str, Any]) -> tup
     raise PrepareError(f"Unsupported prepare input format: {suffix or paths[0]}")
 
 
+def _parquet_coordinate_dask_dataframe(path: Path, config: dict[str, Any]) -> Any:
+    import dask.dataframe as dd
+
+    ra_column, dec_column = _hats_ra_dec_columns(config)
+    return dd.read_parquet(
+        str(path),
+        columns=[ra_column, dec_column],
+        split_row_groups=True,
+        blocksize=_target_partition_size(config),
+        aggregate_files=False,
+    )
+
+
 def _write_dask_parquet(
     df: Any,
     output_dir: Path,
@@ -336,6 +438,58 @@ def _write_small_input(path: Path, output_dir: Path, config: dict[str, Any]) -> 
     return 1
 
 
+def _small_input_dataframe(path: Path, config: dict[str, Any]) -> pd.DataFrame:
+    return read_table(
+        path,
+        fits_hdu=int(config.get("fits_hdu", 1)),
+        column_names=config.get("column_names"),
+        dask_threshold_bytes=None,
+    )
+
+
+def _small_inputs_dataframe(paths: list[Path], suffix: str, config: dict[str, Any]) -> pd.DataFrame:
+    if len(paths) > 1:
+        _validate_matching_schemas(paths, suffix, config)
+    frames = [_small_input_dataframe(path, config) for path in paths]
+    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+
+def _write_small_hats_inputs(paths: list[Path], suffix: str, output_dir: Path, config: dict[str, Any]) -> int:
+    ra_column, dec_column = _hats_ra_dec_columns(config)
+    df = _small_inputs_dataframe(paths, suffix, config)
+    _validate_hats_coordinate_columns(df, config)
+
+    return write_hats_from_dataframe(
+        df,
+        output_dir,
+        config,
+        ra_column=ra_column,
+        dec_column=dec_column,
+        partition_bytes=_target_partition_size_bytes(config),
+        error_cls=PrepareError,
+    )
+
+
+def _run_hats_import_from_parquet(
+    parquet_dir: Path,
+    output_dir: Path,
+    config: dict[str, Any],
+    client: Any,
+    cluster_config: dict[str, Any],
+) -> None:
+    ra_column, dec_column = _hats_ra_dec_columns(config)
+    run_hats_import_from_parquet(
+        parquet_dir,
+        output_dir,
+        config,
+        client,
+        ra_column=ra_column,
+        dec_column=dec_column,
+        cluster_config=cluster_config,
+        error_cls=PrepareError,
+    )
+
+
 def _resolve_output_mode(config: dict[str, Any], is_single_small_file: bool, is_multi_file: bool) -> str:
     output_mode = _output_mode(config)
     if output_mode == "auto":
@@ -363,13 +517,27 @@ def _dask_logs_dir(cluster_config: dict[str, Any], output_dir: Path) -> Path | N
 
 
 def prepare_catalog(config: dict[str, Any]) -> Path:
-    """Prepare catalog input as a partitioned Parquet dataset."""
+    """Prepare catalog input as a partitioned Parquet or HATS dataset."""
     input_paths = _as_paths(config.get("input_files") or [config["input_file"]])
     output_dir = Path(config["output_dir"])
     overwrite = bool(config.get("overwrite", False))
     threshold_bytes = _large_file_threshold_bytes(config)
     chunk_size = int(config.get("chunk_size_rows", DEFAULT_CHUNK_SIZE_ROWS))
     prefix = str(config.get("part_prefix") or input_paths[0].stem)
+    output_format = _output_format(config)
+
+    if output_format == "hats":
+        _hats_ra_dec_columns(config)
+        _hats_margin_threshold(config)
+        _hats_catalog_name(output_dir, config)
+        _hats_sort_columns(config)
+
+    for path in input_paths:
+        if is_hats_input(path):
+            raise PrepareError(
+                "Input is already a HATS catalog or collection. HATS is supported directly by "
+                "inspect and curate, so prepare is not required for this input."
+            )
 
     for path in input_paths:
         _check_large_compressed(path, threshold_bytes)
@@ -377,7 +545,27 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
     if len(input_paths) == 1 and input_paths[0].is_dir():
         if not any(input_paths[0].glob("*.parquet")) and not (input_paths[0] / "_metadata").exists():
             raise PrepareError(f"Unsupported directory input: {input_paths[0]}. Expected a Parquet dataset.")
-        return input_paths[0]
+        if output_format == "parquet":
+            return input_paths[0]
+        input_format = "parquet"
+        _prepare_output_dir(output_dir, overwrite=overwrite)
+        cluster_config = dask_cluster_config(config)
+        with dask_client_context(
+            cluster_config, logs_dir=_dask_logs_dir(cluster_config, output_dir)
+        ) as client:
+            _validate_hats_coordinate_columns(
+                _parquet_coordinate_dask_dataframe(input_paths[0], config), config
+            )
+            _run_hats_import_from_parquet(input_paths[0], output_dir, config, client, cluster_config)
+        _write_manifest(
+            output_dir,
+            input_paths,
+            input_format,
+            config,
+            n_partitions=0,
+            output_mode="hats",
+        )
+        return output_dir
 
     suffixes = {_data_suffix(path) for path in input_paths}
     if len(suffixes) != 1:
@@ -387,7 +575,8 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
     if len(input_paths) > 1:
         _validate_matching_schemas(input_paths, suffix, config)
 
-    is_single_small_file = len(input_paths) == 1 and input_paths[0].stat().st_size < threshold_bytes
+    is_small_input = _total_input_size(input_paths) < threshold_bytes
+    is_single_small_file = len(input_paths) == 1 and is_small_input
     output_mode = _resolve_output_mode(
         config,
         is_single_small_file=is_single_small_file,
@@ -396,7 +585,21 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
 
     _prepare_output_dir(output_dir, overwrite=overwrite)
 
-    if is_single_small_file and output_mode == "single":
+    if output_format == "hats" and is_small_input:
+        cluster_config = dask_cluster_config(config)
+        with dask_client_context(cluster_config, logs_dir=_dask_logs_dir(cluster_config, output_dir)):
+            n_partitions = _write_small_hats_inputs(input_paths, suffix, output_dir, config)
+        _write_manifest(
+            output_dir,
+            input_paths,
+            input_format,
+            config,
+            n_partitions=n_partitions,
+            output_mode="hats",
+        )
+        return output_dir
+
+    if is_single_small_file and output_mode == "single" and output_format == "parquet":
         n_partitions = _write_small_input(input_paths[0], output_dir, config)
         _write_manifest(
             output_dir,
@@ -407,6 +610,12 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
             output_mode=output_mode,
         )
         return output_dir
+
+    parquet_output_dir = output_dir
+    if output_format == "hats":
+        parquet_output_dir = Path(
+            tempfile.mkdtemp(prefix=f".{output_dir.name}-parquet-", dir=str(output_dir.parent))
+        )
 
     if suffix in FITS_SUFFIXES:
         df, n_partitions = _fits_paths_to_dask_dataframe(
@@ -423,15 +632,23 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
 
     cluster_config = dask_cluster_config(config)
     logs_dir = _dask_logs_dir(cluster_config, output_dir)
-    with dask_client_context(cluster_config, logs_dir=logs_dir):
-        n_written = _write_dask_parquet(
-            df,
-            output_dir,
-            prefix=prefix,
-            overwrite=True,
-            output_mode=output_mode,
-            schema=write_schema,
-        )
+    try:
+        with dask_client_context(cluster_config, logs_dir=logs_dir) as client:
+            if output_format == "hats":
+                _validate_hats_coordinate_columns(df, config)
+            n_written = _write_dask_parquet(
+                df,
+                parquet_output_dir,
+                prefix=prefix,
+                overwrite=True,
+                output_mode=output_mode,
+                schema=write_schema,
+            )
+            if output_format == "hats":
+                _run_hats_import_from_parquet(parquet_output_dir, output_dir, config, client, cluster_config)
+    finally:
+        if output_format == "hats" and parquet_output_dir.exists():
+            shutil.rmtree(parquet_output_dir)
 
     _write_manifest(
         output_dir,
@@ -439,6 +656,6 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         input_format,
         config,
         n_partitions=n_written or n_partitions,
-        output_mode=output_mode,
+        output_mode="hats" if output_format == "hats" else output_mode,
     )
     return output_dir

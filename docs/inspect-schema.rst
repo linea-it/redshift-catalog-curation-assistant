@@ -16,7 +16,8 @@ Required Fields
 ---------------
 
 ``input_file``
-  Catalog file or partitioned Parquet directory to inspect.
+  Catalog file, partitioned Parquet directory, or HATS catalog/collection
+  directory to inspect.
 
 Common Options
 --------------
@@ -45,6 +46,9 @@ Common Options
 
 ``sample_max_columns``
   Maximum number of columns included in the sample rows.
+
+``sample_seed``
+  Random seed used by HATS/LSDB sampling. Defaults to ``42``.
 
 ``column_names``
   Required for headerless whitespace files such as ``.dat`` and ``.idz``.
@@ -90,6 +94,20 @@ Large Input Options
   Optional Dask executor config. If omitted and a Dask path is used, the default
   local cluster has one worker, one thread per worker, and 6 GB memory.
 
+HATS Input
+----------
+
+When ``input_file`` points to a HATS catalog or HATS collection directory,
+``inspect`` opens it with ``lsdb.open_catalog()`` and always creates a Dask
+client, regardless of catalog size. The report stays on the public LSDB
+``Catalog`` API: columns and dtypes come from catalog attributes, sample rows
+come from ``random_sample()``, and numeric min/max/null/count statistics come
+from ``aggregate_column_statistics()``.
+
+HATS categorical unique values are estimated from an LSDB random sample rather
+than a full catalog scan. This keeps inspection lightweight and avoids dropping
+below the LSDB catalog abstraction.
+
 Reports
 -------
 
@@ -118,6 +136,12 @@ Inspect a versioned sample:
 .. code-block:: console
 
    redshift-curator inspect configs/inspect/synthetic.example.yaml
+
+Inspect a HATS collection:
+
+.. code-block:: console
+
+   redshift-curator inspect configs/inspect/elaisfbmc_collection.example.yaml
 
 Inspect a FITS file after checking HDUs:
 

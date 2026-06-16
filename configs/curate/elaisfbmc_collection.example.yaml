@@ -1,0 +1,28 @@
+input_file: tests/data/raw/elaisfbmc_collection
+output_dir: outputs/curated/elaisfbmc_collection_hats
+overwrite: true
+output_format: hats
+
+column_selection:
+  - ELAIS
+  - RAdeg
+  - DEdeg
+  - zbest
+  - zbest_type
+  - zbest_quality
+
+coordinates:
+  ra_column: RAdeg
+  dec_column: DEdeg
+
+redshift:
+  column: zbest
+
+transformations:
+  - type: add_constant_column
+    name: survey_name_curated
+    value: ELAISFBMC
+
+hats:
+  catalog_name: elaisfbmc_curated
+  margin_threshold: 5.0

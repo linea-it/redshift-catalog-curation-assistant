@@ -1,5 +1,6 @@
 import json
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, cast
 
@@ -8,6 +9,16 @@ import pandas as pd
 import yaml
 
 from ..executor import dask_client_context, dask_cluster_config
+from ..hats import (
+    hats_catalog_name,
+    hats_config,
+    hats_margin_threshold,
+    hats_ra_dec_columns_with_defaults,
+    hats_sort_columns,
+    is_hats_input,
+    run_hats_import_from_parquet,
+    write_hats_from_dataframe,
+)
 from ..io import DEFAULT_DASK_THRESHOLD_BYTES, read_table
 from ..prepare.prepare import (
     DEFAULT_TARGET_PARTITION_SIZE_MB,
@@ -16,6 +27,7 @@ from ..prepare.prepare import (
     _data_suffix,
     _schema_for_path,
     _target_partition_size,
+    _target_partition_size_bytes,
 )
 
 GENERATED_COLUMNS_POSITION = {"first", "last"}
@@ -38,6 +50,7 @@ REDSHIFT_MAX = 20.0
 REDSHIFT_INVALID_POLICIES = {"fail", "flag"}
 DEFAULT_INVALID_REDSHIFT_VALUE = -1.0
 REDSHIFT_FILTER_OPERATORS = {"<", "<=", ">", ">=", "==", "!="}
+OUTPUT_FORMATS = {"parquet", "hats"}
 
 
 class CurateError(ValueError):
@@ -101,6 +114,30 @@ def _output_mode(config: dict[str, Any]) -> str:
     if output_mode not in OUTPUT_MODES:
         raise CurateError("output_mode must be one of: auto, single, partitioned.")
     return output_mode
+
+
+def _output_format(config: dict[str, Any]) -> str:
+    output_format = str(config.get("output_format", "parquet")).lower()
+    if output_format not in OUTPUT_FORMATS:
+        raise CurateError("output_format must be one of: parquet, hats.")
+    return output_format
+
+
+def _hats_catalog_name(output_dir: Path, config: dict[str, Any]) -> str:
+    return hats_catalog_name(output_dir, config, CurateError)
+
+
+def _hats_margin_threshold(config: dict[str, Any]) -> float:
+    return hats_margin_threshold(config, CurateError)
+
+
+def _hats_sort_columns(config: dict[str, Any]) -> str | None:
+    return hats_sort_columns(config, CurateError)
+
+
+def _hats_ra_dec_columns(config: dict[str, Any]) -> tuple[str, str]:
+    ra_column, dec_column = _coordinate_config(config)
+    return hats_ra_dec_columns_with_defaults(config, ra_column, dec_column, CurateError)
 
 
 def _generated_columns_position(config: dict[str, Any]) -> str:
@@ -401,6 +438,13 @@ def _validate_config(config: Any) -> dict[str, Any]:
     _redshift_config(config)
     _column_selection(config)
     _output_mode(config)
+    output_format = _output_format(config)
+    if output_format == "hats":
+        output_dir = Path(output_dir)
+        _hats_catalog_name(output_dir, config)
+        _hats_ra_dec_columns(config)
+        _hats_margin_threshold(config)
+        _hats_sort_columns(config)
     _generated_columns_position(config)
     _validate_transformations(config.get("transformations", []))
     return config
@@ -1130,6 +1174,235 @@ def _write_partitioned_parquet(df: Any, output_dir: Path, prefix: str, output_mo
     return n_parts
 
 
+def _write_hats_from_dataframe(df: pd.DataFrame, output_dir: Path, config: dict[str, Any]) -> int:
+    ra_column, dec_column = _hats_ra_dec_columns(config)
+    return write_hats_from_dataframe(
+        df,
+        output_dir,
+        config,
+        ra_column=ra_column,
+        dec_column=dec_column,
+        partition_bytes=_target_partition_size_bytes(config),
+        error_cls=CurateError,
+    )
+
+
+def _run_hats_import_from_parquet(
+    parquet_dir: Path,
+    output_dir: Path,
+    config: dict[str, Any],
+    client: Any,
+    cluster_config: dict[str, Any],
+) -> None:
+    ra_column, dec_column = _hats_ra_dec_columns(config)
+    run_hats_import_from_parquet(
+        parquet_dir,
+        output_dir,
+        config,
+        client,
+        ra_column=ra_column,
+        dec_column=dec_column,
+        cluster_config=cluster_config,
+        error_cls=CurateError,
+    )
+
+
+def _write_hats_from_dask_dataframe(
+    df: Any,
+    output_dir: Path,
+    prefix: str,
+    output_mode: str,
+    config: dict[str, Any],
+    client: Any,
+    cluster_config: dict[str, Any],
+) -> int:
+    parquet_output_dir = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}-parquet-", dir=str(output_dir.parent))
+    )
+    try:
+        n_partitions = _write_partitioned_parquet(df, parquet_output_dir, prefix, output_mode)
+        _run_hats_import_from_parquet(parquet_output_dir, output_dir, config, client, cluster_config)
+        return n_partitions
+    finally:
+        if parquet_output_dir.exists():
+            shutil.rmtree(parquet_output_dir)
+
+
+def _transformed_meta_from_catalog(catalog: Any, config: dict[str, Any]) -> tuple[pd.DataFrame, list[str]]:
+    meta = catalog.head(0)
+    transformed_meta, generated_columns = _apply_transformations(meta.copy(), config)
+    return transformed_meta, generated_columns
+
+
+def _transform_partition(partition: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
+    transformed, _generated_columns = _apply_transformations(partition.copy(), config)
+    return transformed
+
+
+def _standard_stats_partition(
+    partition: pd.DataFrame,
+    ra_column: str,
+    dec_column: str,
+    redshift_column: str,
+    allow_blueshifts: bool,
+) -> pd.DataFrame:
+    if partition.empty:
+        return pd.DataFrame(
+            {
+                "row_count": [0],
+                "ra_min": [np.nan],
+                "ra_max": [np.nan],
+                "dec_min": [np.nan],
+                "dec_max": [np.nan],
+                "z_min": [np.nan],
+                "z_max": [np.nan],
+                "invalid_redshift_count": [0],
+            }
+        )
+    ra_values = pd.to_numeric(partition[ra_column], errors="raise")
+    dec_values = pd.to_numeric(partition[dec_column], errors="raise")
+    redshift_values = pd.to_numeric(partition[redshift_column], errors="raise")
+    invalid_redshift_mask = ~_valid_redshift_mask(redshift_values, allow_blueshifts)
+    return pd.DataFrame(
+        {
+            "row_count": [len(partition)],
+            "ra_min": [ra_values.min()],
+            "ra_max": [ra_values.max()],
+            "dec_min": [dec_values.min()],
+            "dec_max": [dec_values.max()],
+            "z_min": [redshift_values.min()],
+            "z_max": [redshift_values.max()],
+            "invalid_redshift_count": [int(invalid_redshift_mask.sum())],
+        }
+    )
+
+
+def _stats_meta() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "row_count": pd.Series(dtype="int64"),
+            "ra_min": pd.Series(dtype="float64"),
+            "ra_max": pd.Series(dtype="float64"),
+            "dec_min": pd.Series(dtype="float64"),
+            "dec_max": pd.Series(dtype="float64"),
+            "z_min": pd.Series(dtype="float64"),
+            "z_max": pd.Series(dtype="float64"),
+            "invalid_redshift_count": pd.Series(dtype="int64"),
+        }
+    )
+
+
+def _validate_standard_hats_catalog(catalog: Any, config: dict[str, Any]) -> tuple[str, str, str, bool]:
+    ra_column, dec_column = _coordinate_config(config)
+    redshift_column, invalid_policy, _invalid_value, allow_blueshifts = _redshift_config(config)
+    redshift_min, redshift_max = _redshift_range(allow_blueshifts)
+    _ensure_columns(catalog, [ra_column], "RA validation")
+    _ensure_columns(catalog, [dec_column], "DEC validation")
+    _ensure_columns(catalog, [redshift_column], "redshift validation")
+
+    try:
+        stats = catalog.map_partitions(
+            _standard_stats_partition,
+            ra_column,
+            dec_column,
+            redshift_column,
+            allow_blueshifts,
+            meta=_stats_meta(),
+        ).compute(progress_bar=bool(config.get("progress_bar", False)))
+    except Exception as exc:
+        raise CurateError(
+            "Configured RA, DEC, and redshift columns must be numeric before curation output. "
+            "Use a supported coordinate conversion transformation or redshift transformation, "
+            "then validate the generated columns."
+        ) from exc
+
+    if stats.empty or int(stats["row_count"].sum()) <= 0:
+        raise CurateError("Curated HATS catalog has no rows to validate.")
+
+    ra_min = float(stats["ra_min"].min())
+    ra_max = float(stats["ra_max"].max())
+    dec_min = float(stats["dec_min"].min())
+    dec_max = float(stats["dec_max"].max())
+    z_min = float(stats["z_min"].min())
+    z_max = float(stats["z_max"].max())
+    invalid_redshift_count = int(stats["invalid_redshift_count"].sum())
+
+    if ra_min < RA_MIN_DEG or ra_max >= RA_MAX_DEG:
+        raise CurateError(
+            f"RA column '{ra_column}' is outside the required range [{RA_MIN_DEG}, {RA_MAX_DEG}). "
+            f"Observed range: [{ra_min}, {ra_max}]. "
+            "Use a supported coordinate conversion transformation and validate the generated column."
+        )
+    if dec_min <= DEC_MIN_DEG or dec_max >= DEC_MAX_DEG:
+        raise CurateError(
+            f"DEC column '{dec_column}' is outside the required range ({DEC_MIN_DEG}, {DEC_MAX_DEG}). "
+            f"Observed range: [{dec_min}, {dec_max}]. "
+            "Use a supported coordinate conversion transformation and validate the generated column."
+        )
+    if invalid_redshift_count and invalid_policy == "fail":
+        raise CurateError(
+            f"Redshift column '{redshift_column}' is outside the required range "
+            f"({redshift_min}, {redshift_max}). "
+            f"Observed range: [{z_min}, {z_max}]. "
+            "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
+            "or set redshift.invalid_policy: flag to map invalid values to -1."
+        )
+    return ra_column, dec_column, redshift_column, allow_blueshifts
+
+
+def _finalize_hats_partition(
+    partition: pd.DataFrame,
+    config: dict[str, Any],
+    redshift_column: str,
+    allow_blueshifts: bool,
+    final_columns: list[str],
+) -> pd.DataFrame:
+    _column, _invalid_policy, invalid_value, _configured_allow_blueshifts = _redshift_config(config)
+    partition = _flag_invalid_redshifts(partition.copy(), redshift_column, invalid_value, allow_blueshifts)
+    partition = _apply_redshift_filters(partition, config, redshift_column)
+    return partition[final_columns]
+
+
+def _curate_hats_input(input_path: Path, output_dir: Path, config: dict[str, Any]) -> tuple[int, list[str]]:
+    import lsdb
+
+    required_columns = _required_input_columns(config)
+    catalog = lsdb.open_catalog(input_path, columns=required_columns)
+    transformed_meta, generated_columns = _transformed_meta_from_catalog(catalog, config)
+    transformed_catalog = catalog.map_partitions(
+        _transform_partition,
+        config,
+        meta=transformed_meta,
+    )
+
+    ra_column, dec_column, redshift_column, allow_blueshifts = _validate_standard_hats_catalog(
+        transformed_catalog, config
+    )
+    final_columns = _final_columns(
+        transformed_meta, config, generated_columns, ra_column, dec_column, redshift_column
+    )
+    _ensure_columns(transformed_meta, list(_hats_ra_dec_columns(config)), "HATS output")
+    final_meta = transformed_meta[final_columns]
+    final_catalog = transformed_catalog.map_partitions(
+        _finalize_hats_partition,
+        config,
+        redshift_column,
+        allow_blueshifts,
+        final_columns,
+        meta=final_meta,
+    )
+    final_catalog.write_catalog(
+        output_dir,
+        catalog_name=_hats_catalog_name(output_dir, config),
+        default_columns=final_columns,
+        as_collection=True,
+        overwrite=True,
+        progress_bar=bool(config.get("progress_bar", False)),
+        create_thumbnail=bool(hats_config(config, CurateError).get("create_thumbnail", False)),
+    )
+    return int(final_catalog.npartitions), final_columns
+
+
 def _resolve_output_mode(config: dict[str, Any], is_small_input: bool) -> str:
     output_mode = _output_mode(config)
     if output_mode == "auto":
@@ -1156,7 +1429,7 @@ def _write_manifest(
 ) -> None:
     manifest = {
         "source_paths": [str(path) for path in input_paths],
-        "partition_format": "parquet",
+        "partition_format": _output_format(config),
         "output_mode": output_mode,
         "n_partitions": n_partitions,
         "columns": final_columns,
@@ -1170,17 +1443,39 @@ def _write_manifest(
             config.get("target_partition_size_mb", DEFAULT_TARGET_PARTITION_SIZE_MB)
         ),
     }
+    if _output_format(config) == "hats":
+        manifest["hats"] = {
+            "catalog_name": _hats_catalog_name(output_dir, config),
+            "ra_column": _hats_ra_dec_columns(config)[0],
+            "dec_column": _hats_ra_dec_columns(config)[1],
+            "margin_threshold": _hats_margin_threshold(config),
+            "sort_columns": _hats_sort_columns(config),
+        }
     (output_dir / "_redshift_curator_curation_manifest.json").write_text(json.dumps(manifest, indent=2))
 
 
 def curate_catalog(config: dict[str, Any]) -> Path:
-    """Curate a local catalog and write a Parquet dataset."""
+    """Curate a local catalog and write a Parquet dataset or HATS collection."""
     cfg = _validate_config(config)
     input_paths = _input_paths(cfg)
     output_dir = Path(cfg["output_dir"])
     threshold_bytes = _large_file_threshold_bytes(cfg)
     is_small_input = _total_input_size(input_paths) < threshold_bytes
     prefix = str(cfg.get("part_prefix") or output_dir.name)
+    output_format = _output_format(cfg)
+    hats_inputs = [path for path in input_paths if is_hats_input(path)]
+
+    if hats_inputs:
+        if len(input_paths) != 1:
+            raise CurateError("HATS curate input must be a single catalog or collection path.")
+        if output_format != "hats":
+            raise CurateError("HATS curate input currently requires output_format: hats.")
+        _prepare_output_dir(output_dir, overwrite=bool(cfg.get("overwrite", False)))
+        cluster_config = dask_cluster_config(cfg)
+        with dask_client_context(cluster_config, logs_dir=output_dir / "logs"):
+            n_partitions, final_columns = _curate_hats_input(input_paths[0], output_dir, cfg)
+        _write_manifest(output_dir, input_paths, "hats", n_partitions, final_columns, cfg)
+        return output_dir
 
     df, is_dask = _read_input(input_paths, cfg, threshold_bytes)
     df, generated_columns = _apply_transformations(df, cfg)
@@ -1189,20 +1484,29 @@ def curate_catalog(config: dict[str, Any]) -> Path:
     _prepare_output_dir(output_dir, overwrite=bool(cfg.get("overwrite", False)))
     if is_dask:
         cluster_config = dask_cluster_config(cfg)
-        with dask_client_context(cluster_config, logs_dir=output_dir / "logs"):
+        with dask_client_context(cluster_config, logs_dir=output_dir / "logs") as client:
             if bool(cfg.get("persist_after_transformations", False)):
                 df = df.persist()
             df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
             df = _apply_redshift_filters(df, cfg, redshift_column)
             final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
             df = df[final_columns]
-            n_partitions = _write_partitioned_parquet(df, output_dir, prefix, output_mode)
+            if output_format == "hats":
+                _ensure_columns(df, list(_hats_ra_dec_columns(cfg)), "HATS output")
+                n_partitions = _write_hats_from_dask_dataframe(
+                    df, output_dir, prefix, output_mode, cfg, client, cluster_config
+                )
+            else:
+                n_partitions = _write_partitioned_parquet(df, output_dir, prefix, output_mode)
     else:
         df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
         df = _apply_redshift_filters(df, cfg, redshift_column)
         final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
         df = df[final_columns]
-    if output_mode == "single" and not is_dask:
+    if output_format == "hats" and not is_dask:
+        _ensure_columns(df, list(_hats_ra_dec_columns(cfg)), "HATS output")
+        n_partitions = _write_hats_from_dataframe(df, output_dir, cfg)
+    elif output_mode == "single" and not is_dask:
         n_partitions = _write_single_parquet(df, output_dir, prefix)
     elif not is_dask:
         cluster_config = dask_cluster_config(cfg)
