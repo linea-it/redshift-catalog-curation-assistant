@@ -32,10 +32,12 @@ RA_MIN_DEG = 0.0
 RA_MAX_DEG = 360.0
 DEC_MIN_DEG = -90.0
 DEC_MAX_DEG = 90.0
-REDSHIFT_MIN = -0.01
-REDSHIFT_MAX = 15.0
+REDSHIFT_MIN_WITH_BLUESHIFTS = -0.1
+REDSHIFT_MIN_WITHOUT_BLUESHIFTS = 0.0
+REDSHIFT_MAX = 20.0
 REDSHIFT_INVALID_POLICIES = {"fail", "flag"}
 DEFAULT_INVALID_REDSHIFT_VALUE = -1.0
+REDSHIFT_FILTER_OPERATORS = {"<", "<=", ">", ">=", "==", "!="}
 
 
 class CurateError(ValueError):
@@ -155,7 +157,7 @@ def _coordinate_config(config: dict[str, Any]) -> tuple[str, str]:
     return ra_column, dec_column
 
 
-def _redshift_config(config: dict[str, Any]) -> tuple[str, str, float]:
+def _redshift_config(config: dict[str, Any]) -> tuple[str, str, float, bool]:
     redshift = config.get("redshift", config.get("redshift_validation"))
     if not isinstance(redshift, dict):
         raise CurateError("curate config requires redshift.column for output validation.")
@@ -168,7 +170,44 @@ def _redshift_config(config: dict[str, Any]) -> tuple[str, str, float]:
     invalid_value = redshift.get("invalid_value", DEFAULT_INVALID_REDSHIFT_VALUE)
     if not isinstance(invalid_value, int | float) or isinstance(invalid_value, bool):
         raise CurateError("redshift.invalid_value must be numeric.")
-    return column, invalid_policy, float(invalid_value)
+    allow_blueshifts = redshift.get("allow_blueshifts", True)
+    if not isinstance(allow_blueshifts, bool):
+        raise CurateError("redshift.allow_blueshifts must be true or false.")
+    _redshift_filters(config)
+    return column, invalid_policy, float(invalid_value), allow_blueshifts
+
+
+def _redshift_range(allow_blueshifts: bool) -> tuple[float, float]:
+    lower = REDSHIFT_MIN_WITH_BLUESHIFTS if allow_blueshifts else REDSHIFT_MIN_WITHOUT_BLUESHIFTS
+    return lower, REDSHIFT_MAX
+
+
+def _redshift_filters(config: dict[str, Any]) -> list[tuple[str, float]]:
+    redshift = config.get("redshift", config.get("redshift_validation"))
+    if not isinstance(redshift, dict):
+        return []
+    filters = redshift.get("filters", [])
+    if filters is None:
+        return []
+    if not isinstance(filters, list | tuple):
+        raise CurateError("redshift.filters must be a list of filter mappings.")
+
+    parsed = []
+    for index, filter_config in enumerate(filters):
+        if not isinstance(filter_config, dict):
+            raise CurateError(f"redshift.filters[{index}] must be a mapping.")
+        operator = filter_config.get("op", filter_config.get("operator"))
+        if operator not in REDSHIFT_FILTER_OPERATORS:
+            raise CurateError(
+                f"redshift.filters[{index}].op must be one of: "
+                + ", ".join(sorted(REDSHIFT_FILTER_OPERATORS))
+                + "."
+            )
+        value = filter_config.get("value")
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise CurateError(f"redshift.filters[{index}].value must be numeric.")
+        parsed.append((operator, float(value)))
+    return parsed
 
 
 def _validate_optional_bool(config: dict[str, Any], key: str) -> None:
@@ -285,6 +324,23 @@ def _validate_coalesce_redshift(transformation: dict[str, Any]) -> None:
     invalid_value = transformation.get("invalid_value", DEFAULT_INVALID_REDSHIFT_VALUE)
     if isinstance(invalid_value, bool) or not isinstance(invalid_value, int | float):
         raise CurateError("coalesce_redshift invalid_value must be numeric.")
+    allow_blueshifts = transformation.get("allow_blueshifts")
+    if allow_blueshifts is not None and not isinstance(allow_blueshifts, bool):
+        raise CurateError("coalesce_redshift allow_blueshifts must be true or false.")
+    label_column = transformation.get("label_column")
+    if label_column is not None and (not isinstance(label_column, str) or not label_column.strip()):
+        raise CurateError("coalesce_redshift label_column must be a non-empty string.")
+    labels = transformation.get("labels")
+    if labels is not None:
+        if not isinstance(labels, list | tuple) or not all(
+            isinstance(label, str) and label.strip() for label in labels
+        ):
+            raise CurateError("coalesce_redshift labels must be a list of non-empty strings.")
+        if isinstance(columns, list | tuple) and len(labels) != len(columns):
+            raise CurateError("coalesce_redshift labels must have the same length as columns.")
+    invalid_label = transformation.get("invalid_label")
+    if invalid_label is not None and (not isinstance(invalid_label, str) or not invalid_label.strip()):
+        raise CurateError("coalesce_redshift invalid_label must be a non-empty string.")
 
 
 def _validate_skycoord_to_degrees(transformation: dict[str, Any]) -> None:
@@ -358,10 +414,16 @@ def _transformation_generated_columns(transformation: dict[str, Any]) -> list[st
     transform_type = transformation.get("type")
     if transform_type == "add_constant_column":
         return [transformation["name"]] if isinstance(transformation.get("name"), str) else []
-    if transform_type in {"ra_hms_to_degrees", "dec_dms_to_degrees", "coalesce_redshift"}:
+    if transform_type in {"ra_hms_to_degrees", "dec_dms_to_degrees"}:
         if isinstance(transformation.get("output_column"), str):
             return [transformation["output_column"]]
         return []
+    if transform_type == "coalesce_redshift":
+        generated = []
+        for column in [transformation.get("output_column"), transformation.get("label_column")]:
+            if isinstance(column, str):
+                generated.append(column)
+        return generated
     if transform_type == "velocity_to_redshift":
         generated = []
         if isinstance(transformation.get("output_column"), str):
@@ -444,7 +506,7 @@ def _required_input_columns(config: dict[str, Any]) -> list[str] | None:
 
     generated_columns = set(_generated_columns(config))
     ra_column, dec_column = _coordinate_config(config)
-    redshift_column, _invalid_policy, _invalid_value = _redshift_config(config)
+    redshift_column, _invalid_policy, _invalid_value, _allow_blueshifts = _redshift_config(config)
     required = [column for column in selection if column not in generated_columns]
     required.extend(
         column for column in [ra_column, dec_column, redshift_column] if column not in generated_columns
@@ -673,14 +735,19 @@ def _velocity_to_redshift(df: Any, transformation: dict[str, Any]) -> tuple[Any,
     return df, generated
 
 
-def _valid_redshift_mask(series: Any) -> Any:
-    return (series > REDSHIFT_MIN) & (series < REDSHIFT_MAX)
+def _valid_redshift_mask(series: Any, allow_blueshifts: bool = True) -> Any:
+    redshift_min, redshift_max = _redshift_range(allow_blueshifts)
+    return (series > redshift_min) & (series < redshift_max)
 
 
 def _coalesce_redshift(df: Any, transformation: dict[str, Any]) -> tuple[Any, list[str]]:
     output_column = transformation.get("output_column")
     columns = transformation.get("columns")
     invalid_value = transformation.get("invalid_value", DEFAULT_INVALID_REDSHIFT_VALUE)
+    allow_blueshifts = transformation.get("allow_blueshifts", True)
+    label_column = transformation.get("label_column")
+    labels = transformation.get("labels")
+    invalid_label = transformation.get("invalid_label", "invalid")
     if not isinstance(output_column, str) or not output_column.strip():
         raise CurateError("coalesce_redshift requires a non-empty output_column.")
     if (
@@ -691,16 +758,49 @@ def _coalesce_redshift(df: Any, transformation: dict[str, Any]) -> tuple[Any, li
         raise CurateError("coalesce_redshift requires a non-empty columns list.")
     if not isinstance(invalid_value, int | float) or isinstance(invalid_value, bool):
         raise CurateError("coalesce_redshift invalid_value must be numeric.")
+    if not isinstance(allow_blueshifts, bool):
+        raise CurateError("coalesce_redshift allow_blueshifts must be true or false.")
+    if label_column is not None and (not isinstance(label_column, str) or not label_column.strip()):
+        raise CurateError("coalesce_redshift label_column must be a non-empty string.")
+    if labels is not None:
+        if not isinstance(labels, list | tuple) or not all(
+            isinstance(label, str) and label.strip() for label in labels
+        ):
+            raise CurateError("coalesce_redshift labels must be a list of non-empty strings.")
+        if len(labels) != len(columns):
+            raise CurateError("coalesce_redshift labels must have the same length as columns.")
+    if not isinstance(invalid_label, str) or not invalid_label.strip():
+        raise CurateError("coalesce_redshift invalid_label must be a non-empty string.")
     output_column = cast(str, output_column)
     columns = cast(list[str], list(columns))
+    labels = cast(list[str], list(labels) if labels is not None else list(columns))
     _ensure_columns(df, columns, "coalesce_redshift")
 
-    result = df[columns[0]].where(_valid_redshift_mask(df[columns[0]]), invalid_value)
-    for column in columns[1:]:
-        candidate = df[column].where(_valid_redshift_mask(df[column]), invalid_value)
-        result = result.where(result != invalid_value, candidate)
+    valid_mask = _valid_redshift_mask(df[columns[0]], allow_blueshifts)
+    result = df[columns[0]].where(valid_mask, invalid_value)
+    generated = [output_column]
+    label_result = None
+    if label_column is not None:
+        label_column = cast(str, label_column)
+        label_result = (
+            df[columns[0]].astype("object").where(~valid_mask, labels[0]).where(valid_mask, invalid_label)
+        )
+        generated.append(label_column)
+
+    for column, label in zip(columns[1:], labels[1:], strict=False):
+        valid_mask = _valid_redshift_mask(df[column], allow_blueshifts)
+        candidate = df[column].where(valid_mask, invalid_value)
+        use_candidate = result == invalid_value
+        result = result.where(~use_candidate, candidate)
+        if label_result is not None:
+            candidate_label = (
+                df[column].astype("object").where(~valid_mask, label).where(valid_mask, invalid_label)
+            )
+            label_result = label_result.where(~use_candidate, candidate_label)
     df[output_column] = result
-    return df, [output_column]
+    if label_column is not None and label_result is not None:
+        df[label_column] = label_result
+    return df, generated
 
 
 def _skycoord_to_degrees(df: Any, transformation: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -766,6 +866,9 @@ def _apply_transformations(df: Any, config: dict[str, Any]) -> tuple[Any, list[s
         handler = TRANSFORMATIONS.get(transform_type)
         if handler is None:
             raise CurateError(f"Unsupported transformation type: {transform_type}.")
+        if transform_type == "coalesce_redshift" and "allow_blueshifts" not in transformation:
+            _redshift_column, _invalid_policy, _invalid_value, allow_blueshifts = _redshift_config(config)
+            transformation = {**transformation, "allow_blueshifts": allow_blueshifts}
         df, generated = handler(df, transformation)
         generated_columns.extend(generated)
     return df, list(dict.fromkeys(generated_columns))
@@ -806,25 +909,26 @@ def _validate_coordinates(df: Any, config: dict[str, Any]) -> tuple[str, str]:
     return ra_column, dec_column
 
 
-def _redshift_min_max(series: Any) -> tuple[float, float, int]:
+def _redshift_min_max(series: Any, allow_blueshifts: bool) -> tuple[float, float, int]:
     values = pd.to_numeric(series, errors="raise")
-    mask = ~_valid_redshift_mask(values)
+    mask = ~_valid_redshift_mask(values, allow_blueshifts)
     if hasattr(values, "compute"):
         values = values.compute()
         mask = mask.compute()
     return float(values.min()), float(values.max()), int(mask.sum())
 
 
-def _flag_invalid_redshifts(df: Any, column: str, invalid_value: float) -> Any:
-    df[column] = df[column].where(_valid_redshift_mask(df[column]), invalid_value)
+def _flag_invalid_redshifts(df: Any, column: str, invalid_value: float, allow_blueshifts: bool) -> Any:
+    df[column] = df[column].where(_valid_redshift_mask(df[column], allow_blueshifts), invalid_value)
     return df
 
 
 def _validate_redshift(df: Any, config: dict[str, Any]) -> tuple[Any, str]:
-    column, invalid_policy, invalid_value = _redshift_config(config)
+    column, invalid_policy, invalid_value, allow_blueshifts = _redshift_config(config)
+    redshift_min, redshift_max = _redshift_range(allow_blueshifts)
     _ensure_columns(df, [column], "redshift validation")
     try:
-        min_value, max_value, invalid_count = _redshift_min_max(df[column])
+        min_value, max_value, invalid_count = _redshift_min_max(df[column], allow_blueshifts)
     except Exception as exc:
         raise CurateError(
             f"Redshift column '{column}' must be numeric before curation output. "
@@ -833,18 +937,18 @@ def _validate_redshift(df: Any, config: dict[str, Any]) -> tuple[Any, str]:
 
     if invalid_count and invalid_policy == "fail":
         raise CurateError(
-            f"Redshift column '{column}' is outside the required range ({REDSHIFT_MIN}, {REDSHIFT_MAX}). "
+            f"Redshift column '{column}' is outside the required range ({redshift_min}, {redshift_max}). "
             f"Observed range: [{min_value}, {max_value}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
             "or set redshift.invalid_policy: flag to map invalid values to -1."
         )
     if invalid_count:
-        df = _flag_invalid_redshifts(df, column, invalid_value)
+        df = _flag_invalid_redshifts(df, column, invalid_value, allow_blueshifts)
     return df, column
 
 
 def _standard_column_ranges(
-    df: Any, ra_column: str, dec_column: str, redshift_column: str
+    df: Any, ra_column: str, dec_column: str, redshift_column: str, allow_blueshifts: bool
 ) -> tuple[
     float,
     float,
@@ -857,7 +961,7 @@ def _standard_column_ranges(
     ra_values = pd.to_numeric(df[ra_column], errors="raise")
     dec_values = pd.to_numeric(df[dec_column], errors="raise")
     redshift_values = pd.to_numeric(df[redshift_column], errors="raise")
-    invalid_redshift_mask = ~_valid_redshift_mask(redshift_values)
+    invalid_redshift_mask = ~_valid_redshift_mask(redshift_values, allow_blueshifts)
 
     if hasattr(ra_values, "compute"):
         import dask
@@ -894,7 +998,8 @@ def _standard_column_ranges(
 
 def _validate_standard_columns(df: Any, config: dict[str, Any]) -> tuple[Any, str, str, str]:
     ra_column, dec_column = _coordinate_config(config)
-    redshift_column, invalid_policy, invalid_value = _redshift_config(config)
+    redshift_column, invalid_policy, invalid_value, allow_blueshifts = _redshift_config(config)
+    redshift_min, redshift_max = _redshift_range(allow_blueshifts)
     _ensure_columns(df, [ra_column], "RA validation")
     _ensure_columns(df, [dec_column], "DEC validation")
     _ensure_columns(df, [redshift_column], "redshift validation")
@@ -905,6 +1010,7 @@ def _validate_standard_columns(df: Any, config: dict[str, Any]) -> tuple[Any, st
             ra_column,
             dec_column,
             redshift_column,
+            allow_blueshifts,
         )
     except Exception as exc:
         raise CurateError(
@@ -928,14 +1034,43 @@ def _validate_standard_columns(df: Any, config: dict[str, Any]) -> tuple[Any, st
     if invalid_redshift_count and invalid_policy == "fail":
         raise CurateError(
             f"Redshift column '{redshift_column}' is outside the required range "
-            f"({REDSHIFT_MIN}, {REDSHIFT_MAX}). "
+            f"({redshift_min}, {redshift_max}). "
             f"Observed range: [{z_min}, {z_max}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
             "or set redshift.invalid_policy: flag to map invalid values to -1."
         )
     if invalid_redshift_count:
-        df = _flag_invalid_redshifts(df, redshift_column, invalid_value)
+        df = _flag_invalid_redshifts(df, redshift_column, invalid_value, allow_blueshifts)
     return df, ra_column, dec_column, redshift_column
+
+
+def _redshift_filter_condition(values: Any, operator: str, threshold: float) -> Any:
+    if operator == "<":
+        return values < threshold
+    if operator == "<=":
+        return values <= threshold
+    if operator == ">":
+        return values > threshold
+    if operator == ">=":
+        return values >= threshold
+    if operator == "==":
+        return values == threshold
+    if operator == "!=":
+        return values != threshold
+    raise CurateError(f"Unsupported redshift filter operator: {operator}.")
+
+
+def _apply_redshift_filters(df: Any, config: dict[str, Any], redshift_column: str) -> Any:
+    filters = _redshift_filters(config)
+    if not filters:
+        return df
+
+    _, _, _, allow_blueshifts = _redshift_config(config)
+    values = pd.to_numeric(df[redshift_column], errors="raise")
+    mask = _valid_redshift_mask(values, allow_blueshifts)
+    for operator, threshold in filters:
+        mask = mask & _redshift_filter_condition(values, operator, threshold)
+    return df[mask]
 
 
 def _final_columns(
@@ -1058,11 +1193,13 @@ def curate_catalog(config: dict[str, Any]) -> Path:
             if bool(cfg.get("persist_after_transformations", False)):
                 df = df.persist()
             df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
+            df = _apply_redshift_filters(df, cfg, redshift_column)
             final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
             df = df[final_columns]
             n_partitions = _write_partitioned_parquet(df, output_dir, prefix, output_mode)
     else:
         df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
+        df = _apply_redshift_filters(df, cfg, redshift_column)
         final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
         df = df[final_columns]
     if output_mode == "single" and not is_dask:

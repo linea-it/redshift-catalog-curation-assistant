@@ -47,7 +47,9 @@ Required Fields
 
 ``redshift.column``
   Final redshift column to validate and keep. Redshift must be numeric in
-  ``(-0.01, 15)`` unless ``redshift.invalid_policy: flag`` is set.
+  ``(-0.1, 20)`` by default. Set ``redshift.allow_blueshifts: false`` to use
+  ``(0, 20)`` instead. Invalid values stop curation unless
+  ``redshift.invalid_policy: flag`` is set.
 
 Input And Output Options
 ------------------------
@@ -114,14 +116,65 @@ By default, invalid redshift values stop curation:
    redshift:
      column: z
 
+The default allows blueshifts down to ``-0.1`` and validates
+``-0.1 < z < 20``:
+
+.. code-block:: yaml
+
+   redshift:
+     column: z
+     allow_blueshifts: true
+
+To reject blueshifts, use ``allow_blueshifts: false``. The standard range then
+becomes ``0 < z < 20``:
+
+.. code-block:: yaml
+
+   redshift:
+     column: z
+     allow_blueshifts: false
+
 To keep processing and map invalid values to the standard ``-1`` flag:
 
 .. code-block:: yaml
 
    redshift:
      column: z
+     allow_blueshifts: false
      invalid_policy: flag
      invalid_value: -1
+
+To keep only rows inside a science-specific redshift window, add
+``redshift.filters``. Filters are applied to the final redshift column after
+standard validation and transformations. Each filter is a simple comparison
+with ``op`` and numeric ``value``. Supported operators are ``<``, ``<=``,
+``>``, ``>=``, ``==``, and ``!=``.
+
+For example, keep only rows with ``z < 9``:
+
+.. code-block:: yaml
+
+   redshift:
+     column: z
+     filters:
+       - op: "<"
+         value: 9
+
+Multiple filters are combined with logical AND. This keeps
+``1.6 < z < 9``:
+
+.. code-block:: yaml
+
+   redshift:
+     column: z
+     filters:
+       - op: ">"
+         value: 1.6
+       - op: "<"
+         value: 9
+
+When filters are present, rows with invalid or flagged redshift values are not
+kept, even if the flag value would satisfy one comparison numerically.
 
 Transformations
 ---------------
@@ -197,7 +250,11 @@ redshift validation.
 
 ``coalesce_redshift``
   Creates a final redshift from prioritized candidates. The first valid value in
-  ``(-0.01, 15)`` is used; if none are valid, ``invalid_value`` is written.
+  the configured standard redshift range is used; if none are valid,
+  ``invalid_value`` is written. By default this follows
+  ``redshift.allow_blueshifts``. Optionally, ``label_column`` writes the source
+  label for the candidate that supplied the final redshift. If ``labels`` is not
+  provided, the candidate column names are used as labels.
 
   .. code-block:: yaml
 
@@ -206,6 +263,11 @@ redshift validation.
        columns:
          - z_spec
          - z_phot
+       labels:
+         - s
+         - p
+       label_column: z_source
+       invalid_label: none
        invalid_value: -1
 
 Column Pushdown
