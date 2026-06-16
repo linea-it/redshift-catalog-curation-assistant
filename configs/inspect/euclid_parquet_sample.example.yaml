@@ -1,4 +1,4 @@
-input_file: data_not_tracked/part0.snappy.parquet
+input_file: tests/data/raw/euclid_q1_sample.snappy.parquet
 survey_name: EUCLID_PARQUET_SAMPLE
 unique_limit: 10
 

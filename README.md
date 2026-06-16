@@ -30,23 +30,23 @@ After installation, the phase-0 command surface is:
 redshift-curator --help
 redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
 redshift-curator prepare configs/prepare/desi_deep_pilot.example.yaml
+redshift-curator curate configs/curate/synthetic.example.yaml
 redshift-curator inspect --path tests/data/raw/6dfgs_sample.csv.gz
 redshift-curator inspect configs/inspect/synthetic.example.yaml
 redshift-curator version
 ```
 
-The planned commands are already present in the CLI so scripts can start using
-the stable command names:
+Later-phase command names are already present in the CLI so scripts can start
+using stable names:
 
 ```bash
-redshift-curator curate configs/inspect/synthetic.example.yaml
 redshift-curator qa configs/inspect/synthetic.example.yaml
 redshift-curator validate-flags configs/inspect/synthetic.example.yaml
 redshift-curator run configs/inspect/synthetic.example.yaml
 ```
 
-`inspect`, `inspect-fits`, and `prepare` are functional. The other commands are
-placeholders for later phases.
+`inspect`, `inspect-fits`, `prepare`, and `curate` are functional. `qa`,
+`validate-flags`, and `run` are placeholders for later phases.
 
 ## Example
 
@@ -129,6 +129,26 @@ inspected through the PyArrow dataset path:
 ```bash
 redshift-curator inspect --path converted_catalog/
 ```
+
+Curated outputs are always written as Parquet datasets:
+
+```bash
+redshift-curator curate configs/curate/synthetic.example.yaml
+redshift-curator curate configs/curate/2dfgrs.example.yaml
+redshift-curator curate configs/curate/6dfgs.example.yaml
+```
+
+`curate` can read small raw catalogs directly in memory. For large inputs, use
+`prepare` first and pass the prepared Parquet dataset to `curate`. Curation
+configs can select and order output columns, add constant string columns, cast
+simple types, convert HMS/DMS coordinates to degrees, convert velocity to
+redshift, coalesce prioritized redshift candidates into one final column, and
+convert hourangle/degree coordinates with Astropy `SkyCoord`. Configs must
+identify the final RA and DEC columns under `coordinates` and the final redshift
+column under `redshift`. Curation stops early if those columns are non-numeric or
+outside RA `[0, 360)`, DEC `(-90, 90)`, and redshift `(-0.01, 15)`. Users can
+set `redshift.invalid_policy: flag` to map invalid redshifts to the standard
+`-1` flag instead of failing.
 
 Advanced users can configure the cluster in YAML:
 

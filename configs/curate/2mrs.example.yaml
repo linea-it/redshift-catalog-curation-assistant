@@ -1,0 +1,27 @@
+input_file: tests/data/raw/2mrs_sample.fits
+output_dir: reports/curated/2mrs.parquet
+overwrite: true
+fits_hdu: 1
+
+column_selection:
+  - RA
+  - DEC
+  - redshift
+  - redshift_err
+
+coordinates:
+  ra_column: RA
+  dec_column: DEC
+
+redshift:
+  column: redshift
+
+transformations:
+  - type: velocity_to_redshift
+    velocity_column: V
+    output_column: redshift
+    velocity_error_column: EV
+    error_output_column: redshift_err
+  - type: add_constant_column
+    name: survey_name
+    value: 2MRS

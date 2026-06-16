@@ -4,6 +4,7 @@ from pathlib import Path
 import click
 
 from .. import __version__
+from .. import curate as rc_curate
 from .. import fits as rc_fits
 from .. import inspect as rc_inspect
 from .. import prepare as rc_prepare
@@ -369,7 +370,11 @@ def _planned_command(command: str, config: str) -> None:
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
 def curate(config):
     """Run local curation using CONFIG YAML."""
-    _planned_command("curate", config)
+    try:
+        curated = rc_curate.curate_catalog(rc_curate.load_curate_config(Path(config)))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Curated catalog written to {curated}")
 
 
 @cli.command()

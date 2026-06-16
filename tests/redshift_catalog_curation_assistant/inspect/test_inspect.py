@@ -580,8 +580,12 @@ def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):
     [
         ("configs/inspect/2dfgrs.example.yaml", "2DFGRS", 1000),
         ("configs/inspect/2dflens.example.yaml", "2DFLENS", 1000),
+        ("configs/inspect/2mrs.example.yaml", "2MRS", 1000),
         ("configs/inspect/6dfgs.example.yaml", "6DFGS", 1000),
         ("configs/inspect/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 1000),
+        ("configs/inspect/euclid_parquet_sample.example.yaml", "EUCLID_PARQUET_SAMPLE", 1000),
+        ("configs/inspect/sdss_dr19.example.yaml", "SDSS_DR19_SPALL", 1000),
+        ("configs/inspect/synthetic.example.yaml", "SYNTHETIC_REDSHIFT", 5),
     ],
 )
 def test_inspect_versioned_sample_configs(config_path, survey, n_rows, tmp_path, monkeypatch):

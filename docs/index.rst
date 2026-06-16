@@ -28,6 +28,8 @@ the package in editable mode:
 
    Home page <self>
    Design <design>
+   Curate schema <curate-schema>
+   Curate transformations <curate-transformations>
    Scientific scope <scientific-scope>
    Sample data <sample-data>
    AWS architecture <aws-architecture>

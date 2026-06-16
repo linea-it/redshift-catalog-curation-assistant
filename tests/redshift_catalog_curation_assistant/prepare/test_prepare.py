@@ -1,7 +1,9 @@
 import json
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
+import yaml
 
 from redshift_catalog_curation_assistant.prepare import PrepareError, prepare_catalog
 
@@ -400,3 +402,28 @@ def test_prepare_fits_chunk_size_is_capped_by_target_partition_size():
     )
 
     assert chunk_size == 30_375
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    [
+        "configs/prepare/2dfgrs.example.yaml",
+        "configs/prepare/2dflens.example.yaml",
+        "configs/prepare/2mrs.example.yaml",
+        "configs/prepare/6dfgs.example.yaml",
+        "configs/prepare/desi_deep_pilot.example.yaml",
+        "configs/prepare/euclid_parquet_sample.example.yaml",
+        "configs/prepare/sdss_dr19.example.yaml",
+        "configs/prepare/synthetic.example.yaml",
+    ],
+)
+def test_prepare_versioned_sample_configs(config_path, tmp_path):
+    """Verify every versioned prepare config remains executable."""
+    config = yaml.safe_load(Path(config_path).read_text())
+    config["output_dir"] = str(tmp_path / Path(config_path).stem)
+    config["dask_cluster"] = None
+
+    output_dir = prepare_catalog(config)
+
+    assert sorted(output_dir.glob("*.parquet"))
+    assert (output_dir / "_redshift_curator_manifest.json").exists()

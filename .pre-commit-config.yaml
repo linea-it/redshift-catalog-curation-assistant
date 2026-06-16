@@ -32,7 +32,7 @@ repos:
         name: Check for large files
         description: Prevent the user from committing very large files.
         args: ['--maxkb=500']
-        exclude: ^tests/data/raw/desi_deep_pilot_sample\.fits$
+        exclude: ^tests/data/raw/(desi_deep_pilot_sample\.fits|euclid_q1_sample\.snappy\.parquet|sdss_dr19_sample\.fits)$
     # Verify that pyproject.toml is well formed
   - repo: https://github.com/abravalheri/validate-pyproject
     rev: v0.24.1
