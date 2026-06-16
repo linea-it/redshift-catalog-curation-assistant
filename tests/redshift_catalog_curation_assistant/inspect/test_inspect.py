@@ -7,6 +7,12 @@ import pandas as pd
 import pytest
 
 
+@contextmanager
+def fake_dask_client_context(cluster_config, logs_dir=None):
+    """Stand in for a Dask client without starting a real cluster."""
+    yield
+
+
 def test_default_patterns_cover_common_sample_columns():
     """Verify default patterns cover reusable column names without broad DEC false positives."""
     import redshift_catalog_curation_assistant.inspect.inspect as insp
@@ -71,6 +77,186 @@ def test_inspect_sample(tmp_path, monkeypatch):
     assert (Path("reports") / "TEST" / "inspect_report.md").exists()
 
 
+def test_inspect_markdown_includes_json_report_sections(tmp_path, monkeypatch):
+    """Verify the Markdown report exposes the useful JSON report content."""
+    data = "id,ra,dec,z,kind\n1,10.0,0.1,0.5,galaxy\n2,11.0,0.2,0.6,qso\n"
+    csv = tmp_path / "sample.csv"
+    csv.write_text(data)
+    cfg = {
+        "input_file": str(csv),
+        "survey_name": "MD_REPORT",
+        "stats_mode": "all",
+    }
+    monkeypatch.chdir(tmp_path)
+
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
+
+    outdir = insp.run_inspect_config(cfg)
+    markdown = (outdir / "inspect_report.md").read_text()
+
+    assert "## Columns" in markdown
+    assert "| 4 | z | float64 |" in markdown
+    assert "## Numeric statistics" in markdown
+    assert "| z | 2 | 0 | 0.55 |" in markdown
+    assert "## Categorical unique values" in markdown
+    assert '| kind | ["galaxy", "qso"] |' in markdown
+    assert "## Sample rows" in markdown
+    assert '"kind": "galaxy"' in markdown
+    assert "## Warnings" in markdown
+    assert "No warnings." in markdown
+
+
+def test_inspect_markdown_includes_real_warnings(tmp_path, monkeypatch):
+    """Verify warnings are written to Markdown, not only JSON."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n2,\n")
+    cfg = {
+        "input_file": str(csv),
+        "survey_name": "MD_WARNINGS",
+        "column_selection": ["object_id", "z"],
+    }
+    monkeypatch.chdir(tmp_path)
+
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
+
+    outdir = insp.run_inspect_config(cfg)
+    markdown = (outdir / "inspect_report.md").read_text()
+
+    assert "## Warnings" in markdown
+    assert "- No RA candidate columns were found." in markdown
+    assert "- No DEC candidate columns were found." in markdown
+    assert "- Report was limited to 2 selected columns out of 2 available columns." in markdown
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({}, "Inspect config is empty"),
+        (None, "Inspect config must be a YAML mapping"),
+        ([], "Inspect config must be a YAML mapping"),
+        ({"survey_name": "NO_INPUT"}, "Inspect config requires 'input_file'"),
+        ({"input_file": ""}, "input_file must be a non-empty path string"),
+        ({"input_file": 12}, "input_file must be a non-empty path string"),
+        ({"input_file": "sample.csv", "survey_name": ""}, "survey_name must be a non-empty string"),
+        ({"input_file": "sample.csv", "survey_name": 7}, "survey_name must be a non-empty string"),
+        ({"input_file": "sample.csv", "output_dir": ""}, "output_dir must be a non-empty path string"),
+        ({"input_file": "sample.csv", "output_dir": 7}, "output_dir must be a non-empty path string"),
+        ({"input_file": "sample.csv", "fits_hdu": 0}, "fits_hdu must be a positive integer"),
+        ({"input_file": "sample.csv", "unique_limit": -1}, "unique_limit must be an integer >= 0"),
+        (
+            {"input_file": "sample.csv", "sample_max_columns": -1},
+            "sample_max_columns must be an integer >= 0",
+        ),
+        ({"input_file": "sample.csv", "stats_mode": "bad"}, "stats_mode must be one of"),
+        (
+            {"input_file": "sample.csv", "column_names": "ra,dec,z"},
+            "column_names must be a list of strings",
+        ),
+        (
+            {"input_file": "sample.csv", "column_selection": "ra,dec,z"},
+            "column_selection must be a list of column names",
+        ),
+        (
+            {"input_file": "sample.csv", "column_patterns": []},
+            "column_patterns must be a mapping",
+        ),
+        (
+            {"input_file": "sample.csv", "column_patterns": {"ra": "RA"}},
+            "column_patterns.ra must be a list of regex strings",
+        ),
+        (
+            {"input_file": "sample.csv", "parquet_stats_batch_size": 0},
+            "parquet_stats_batch_size must be a positive integer",
+        ),
+        (
+            {"input_file": "sample.csv", "fits_stats_batch_size": "many"},
+            "fits_stats_batch_size must be a positive integer",
+        ),
+        (
+            {"input_file": "sample.csv", "dask_threshold_mb": -1},
+            "dask_threshold_mb must be a number >= 0 or null",
+        ),
+        (
+            {"input_file": "sample.csv", "dask_cluster": "local"},
+            "dask_cluster must be a mapping",
+        ),
+        (
+            {"input_file": "sample.csv", "allow_large_raw_inspect": "yes"},
+            "allow_large_raw_inspect must be a boolean",
+        ),
+    ],
+)
+def test_inspect_config_validation_errors(config, message):
+    """Verify invalid inspect configs fail with explicit messages."""
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
+
+    with pytest.raises(ValueError, match=message):
+        insp.run_inspect_config(config)
+
+
+def test_inspect_empty_yaml_fails_with_explicit_message(tmp_path):
+    """Verify empty YAML configs fail before low-level KeyError/TypeError exceptions."""
+    cfg = tmp_path / "empty.yaml"
+    cfg.write_text("")
+
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
+
+    with pytest.raises(ValueError, match="Inspect config is empty"):
+        insp.run_inspect(cfg)
+
+
+def test_inspect_config_output_dir_writes_reports_to_custom_directory(tmp_path, monkeypatch):
+    """Verify output_dir overrides the default reports/<survey> location."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n")
+    output_dir = tmp_path / "custom-inspect"
+
+    import redshift_catalog_curation_assistant.inspect.inspect as insp
+
+    outdir = insp.run_inspect_config(
+        {
+            "input_file": str(csv),
+            "survey_name": "CUSTOM_OUTPUT",
+            "output_dir": str(output_dir),
+        }
+    )
+
+    assert outdir == output_dir
+    assert (output_dir / "inspect_report.json").exists()
+    assert (output_dir / "inspect_report.md").exists()
+    assert not (tmp_path / "reports" / "CUSTOM_OUTPUT").exists()
+
+
+def test_inspect_semantic_warnings_for_missing_ambiguous_and_null_columns(tmp_path, monkeypatch):
+    """Verify semantic catalog warnings are audit-only diagnostics."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "semantic.csv"
+    csv.write_text(
+        "RA_TEXT,dec,z,z_spec,best_z,kind\n"
+        "10.0,south,,0.10,0.11,galaxy\n"
+        "11.0,south,,0.20,0.21,qso\n"
+        "12.0,north,0.30,0.30,0.31,galaxy\n"
+        "13.0,north,,0.40,0.41,qso\n"
+    )
+    cfg = {
+        "input_file": str(csv),
+        "survey_name": "SEMANTIC_WARNINGS",
+        "stats_mode": "all",
+    }
+
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    outdir = insp.run_inspect_config(cfg)
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert "No RA candidate columns were found." in report["warnings"]
+    assert "Multiple redshift candidate columns were found: z, z_spec, best_z." in report["warnings"]
+    assert "DEC candidate columns are not numeric: dec." in report["warnings"]
+    assert "Redshift candidate columns have many null values: z (75.0% null)." in report["warnings"]
+    assert "No redshift candidate columns were found." not in report["warnings"]
+
+
 def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
     """Verify inspect can generate the same core report through Dask."""
     data = "id,ra,dec,z_phot,kind\n1,10.0,0.1,0.5,galaxy\n2,11.0,0.2,0.6,qso\n"
@@ -115,7 +301,7 @@ def test_inspect_sample_with_dask_threshold(tmp_path, monkeypatch):
                 "args": {
                     "n_workers": 1,
                     "threads_per_worker": 1,
-                    "memory_limit": "2GB",
+                    "memory_limit": "6GB",
                     "processes": False,
                     "dashboard_address": None,
                 },
@@ -326,6 +512,38 @@ def test_inspect_wide_parquet_uses_limited_pyarrow_strategy(tmp_path, monkeypatc
     assert report["warnings"]
 
 
+def test_inspect_parquet_parallel_fragment_stats(tmp_path, monkeypatch):
+    """Verify Parquet stats can be computed through Dask fragment tasks."""
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "partitioned.parquet"
+    path.mkdir()
+    pd.DataFrame({"ra": [10.0, 11.0], "dec": [-1.0, -1.1], "z": [0.1, 0.2]}).to_parquet(
+        path / "part0.parquet"
+    )
+    pd.DataFrame({"ra": [12.0, 13.0], "dec": [-1.2, -1.3], "z": [0.3, 0.4]}).to_parquet(
+        path / "part1.parquet"
+    )
+
+    import redshift_catalog_curation_assistant.executor as executor
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    monkeypatch.setattr(executor, "dask_client_context", fake_dask_client_context)
+
+    outdir = insp.run_inspect_config(
+        {
+            "input_file": str(path),
+            "survey_name": "PARQUET_PARALLEL",
+            "parallel_stats": True,
+            "parquet_stats_batch_size": 2,
+        }
+    )
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert report["numeric_stats"]["z"]["count"] == 4
+    assert report["numeric_stats"]["z"]["mean"] == pytest.approx(0.25)
+    assert report["numeric_stats"]["ra"]["max"] == pytest.approx(13.0)
+
+
 def test_inspect_fits_uses_selective_sample_and_stats(tmp_path, monkeypatch):
     """Verify FITS inspection can sample and compute candidate stats selectively."""
     from astropy.io import fits
@@ -372,6 +590,52 @@ def test_inspect_fits_uses_selective_sample_and_stats(tmp_path, monkeypatch):
     assert report["categorical_uniques"]["CLASS"] == ["GALAXY", "QSO"]
 
 
+def test_inspect_fits_parallel_chunk_stats(tmp_path, monkeypatch):
+    """Verify FITS stats can be computed through Dask row chunks."""
+    from astropy.io import fits
+    from astropy.table import Table
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "sample.fits"
+    fits.HDUList(
+        [
+            fits.PrimaryHDU(),
+            fits.BinTableHDU(
+                Table(
+                    {
+                        "RA": [10.0, 11.0, 12.0, 13.0],
+                        "DEC": [-1.0, -1.1, -1.2, -1.3],
+                        "Z": [0.1, 0.2, 0.3, 0.4],
+                        "CLASS": ["GALAXY", "QSO", "GALAXY", "STAR"],
+                    }
+                ),
+                name="CATALOG",
+            ),
+        ]
+    ).writeto(path)
+
+    import redshift_catalog_curation_assistant.executor as executor
+    import redshift_catalog_curation_assistant.inspect as insp
+
+    monkeypatch.setattr(executor, "dask_client_context", fake_dask_client_context)
+
+    outdir = insp.run_inspect_config(
+        {
+            "input_file": str(path),
+            "survey_name": "FITS_PARALLEL",
+            "fits_hdu": 1,
+            "parallel_stats": True,
+            "fits_stats_batch_size": 2,
+            "fits_stats_chunk_rows": 2,
+        }
+    )
+    report = json.loads((outdir / "inspect_report.json").read_text())
+
+    assert report["numeric_stats"]["Z"]["count"] == 4
+    assert report["numeric_stats"]["Z"]["mean"] == pytest.approx(0.25)
+    assert report["categorical_uniques"]["CLASS"] == ["GALAXY", "QSO", "STAR"]
+
+
 def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):
     """Verify direct large FITS inspection defaults to candidate stats."""
     from astropy.io import fits
@@ -400,8 +664,12 @@ def test_inspect_large_fits_defaults_to_candidate_stats(tmp_path, monkeypatch):
     [
         ("configs/inspect/2dfgrs.example.yaml", "2DFGRS", 1000),
         ("configs/inspect/2dflens.example.yaml", "2DFLENS", 1000),
+        ("configs/inspect/2mrs.example.yaml", "2MRS", 1000),
         ("configs/inspect/6dfgs.example.yaml", "6DFGS", 1000),
         ("configs/inspect/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 1000),
+        ("configs/inspect/euclid_parquet_sample.example.yaml", "EUCLID_PARQUET_SAMPLE", 1000),
+        ("configs/inspect/sdss_dr19.example.yaml", "SDSS_DR19_SPALL", 1000),
+        ("configs/inspect/synthetic.example.yaml", "SYNTHETIC_REDSHIFT", 5),
     ],
 )
 def test_inspect_versioned_sample_configs(config_path, survey, n_rows, tmp_path, monkeypatch):

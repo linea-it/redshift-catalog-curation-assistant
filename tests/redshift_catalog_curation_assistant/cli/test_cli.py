@@ -1,6 +1,7 @@
 import json
 from contextlib import contextmanager
 
+import pytest
 from click.testing import CliRunner
 
 from redshift_catalog_curation_assistant.cli import cli
@@ -28,6 +29,7 @@ def test_inspect_help():
     assert "--fits-hdu" in result.output
     assert "--stats-mode" in result.output
     assert "--sample-max-columns" in result.output
+    assert "--output-dir" in result.output
     assert "--allow-large-raw-inspect" in result.output
 
 
@@ -100,6 +102,33 @@ def test_inspect_path_command(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "reports/PATH_SAMPLE" in result.output
     assert (tmp_path / "reports" / "PATH_SAMPLE" / "inspect_report.json").exists()
+
+
+def test_inspect_path_command_accepts_output_dir(tmp_path, monkeypatch):
+    """Ensure inspect --path can write reports to an explicit directory."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n")
+    output_dir = tmp_path / "inspect-output"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "inspect",
+            "--path",
+            str(csv),
+            "--survey-name",
+            "PATH_OUTPUT",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert f"Wrote inspection reports to {output_dir}" in result.output
+    assert (output_dir / "inspect_report.json").exists()
+    assert (output_dir / "inspect_report.md").exists()
+    assert not (tmp_path / "reports" / "PATH_OUTPUT").exists()
 
 
 def test_inspect_path_accepts_partitioned_parquet_directory(tmp_path, monkeypatch):
@@ -406,12 +435,36 @@ def test_inspect_rejects_mixed_column_name_options(tmp_path):
     assert "Use either --column-name repeatedly or --column-names once" in result.output
 
 
-def test_planned_command(tmp_path):
-    """Ensure planned commands are present and return a stable placeholder."""
+def test_curate_command(tmp_path):
+    """Ensure curate runs from YAML config and writes Parquet output."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n")
+    output_dir = tmp_path / "curated"
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"input_file: {csv}\n"
+        f"output_dir: {output_dir}\n"
+        "coordinates:\n"
+        "  ra_column: ra\n"
+        "  dec_column: dec\n"
+        "redshift:\n"
+        "  column: z\n"
+    )
+
+    result = CliRunner().invoke(cli, ["curate", str(cfg)])
+
+    assert result.exit_code == 0
+    assert "Curated catalog written to" in result.output
+    assert sorted(output_dir.glob("*.parquet"))
+
+
+@pytest.mark.parametrize("command", ["qa", "validate-flags", "run"])
+def test_planned_commands(command, tmp_path):
+    """Ensure later-phase commands are present and return a stable placeholder."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text("input_file: example.csv\n")
 
-    result = CliRunner().invoke(cli, ["curate", str(cfg)])
+    result = CliRunner().invoke(cli, [command, str(cfg)])
 
     assert result.exit_code == 0
     assert "planned for a later phase" in result.output

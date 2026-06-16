@@ -1,0 +1,32 @@
+input_file: tests/data/raw/6dfgs_sample.csv.gz
+output_dir: reports/curated/6dfgs.parquet
+overwrite: true
+
+column_selection:
+  - SPECID
+  - TARGETID
+  - RA_deg
+  - DEC_deg
+  - Z
+  - Z_HELIO
+  - QUALITY
+
+coordinates:
+  ra_column: RA_deg
+  dec_column: DEC_deg
+
+redshift:
+  column: Z
+  invalid_policy: flag
+
+transformations:
+  - type: skycoord_to_degrees
+    ra_column: OBSRA
+    dec_column: OBSDEC
+    output_ra_column: RA_deg
+    output_dec_column: DEC_deg
+    ra_unit: hourangle
+    dec_unit: deg
+  - type: add_constant_column
+    name: survey_name
+    value: 6DFGS

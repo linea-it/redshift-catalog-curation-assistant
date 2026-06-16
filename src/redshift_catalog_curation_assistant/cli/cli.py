@@ -4,6 +4,7 @@ from pathlib import Path
 import click
 
 from .. import __version__
+from .. import curate as rc_curate
 from .. import fits as rc_fits
 from .. import inspect as rc_inspect
 from .. import prepare as rc_prepare
@@ -25,6 +26,11 @@ def cli():
 @click.option(
     "--survey-name",
     help="Survey name to use for report output. Defaults to the input filename stem.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False),
+    help="Directory where inspect_report.json and inspect_report.md will be written.",
 )
 @click.option(
     "--fits-hdu",
@@ -94,6 +100,7 @@ def inspect(
     config,
     input_path,
     survey_name,
+    output_dir,
     fits_hdu,
     unique_limit,
     stats_mode,
@@ -116,6 +123,8 @@ def inspect(
         cfg.setdefault("sample_max_columns", sample_max_columns)
         cfg.setdefault("dask_threshold_mb", dask_threshold_mb)
         cfg.setdefault("dask_cluster", _parse_dask_cluster_option(dask_cluster))
+        if output_dir:
+            cfg["output_dir"] = output_dir
         if allow_large_raw_inspect:
             cfg["allow_large_raw_inspect"] = True
     else:
@@ -123,6 +132,7 @@ def inspect(
         cfg = {
             "input_file": str(path),
             "survey_name": survey_name or path.stem,
+            "output_dir": output_dir,
             "fits_hdu": fits_hdu,
             "unique_limit": unique_limit,
             "stats_mode": stats_mode,
@@ -360,7 +370,11 @@ def _planned_command(command: str, config: str) -> None:
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
 def curate(config):
     """Run local curation using CONFIG YAML."""
-    _planned_command("curate", config)
+    try:
+        curated = rc_curate.curate_catalog(rc_curate.load_curate_config(Path(config)))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Curated catalog written to {curated}")
 
 
 @cli.command()

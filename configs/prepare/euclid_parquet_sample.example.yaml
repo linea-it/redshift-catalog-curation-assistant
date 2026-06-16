@@ -1,4 +1,4 @@
-input_file: data_not_tracked/part0.snappy.parquet
+input_file: tests/data/raw/euclid_q1_sample.snappy.parquet
 output_dir: reports/prepared/euclid_parquet_sample.parquet
 chunk_size_rows: 200000
 large_file_threshold_mb: 100

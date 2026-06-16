@@ -12,9 +12,9 @@ def test_dask_cluster_config_defaults_to_small_local_cluster():
     config = dask_cluster_config({})
 
     assert config["name"] == "local"
-    assert config["args"]["n_workers"] == 3
+    assert config["args"]["n_workers"] == 1
     assert config["args"]["threads_per_worker"] == 1
-    assert config["args"]["memory_limit"] == "2GB"
+    assert config["args"]["memory_limit"] == "6GB"
     assert config["args"]["dashboard_address"] is None
 
 
@@ -25,7 +25,7 @@ def test_dask_cluster_config_merges_local_overrides():
     assert config["name"] == "local"
     assert config["args"]["n_workers"] == 4
     assert config["args"]["threads_per_worker"] == 1
-    assert config["args"]["memory_limit"] == "2GB"
+    assert config["args"]["memory_limit"] == "6GB"
     assert config["args"]["dashboard_address"] is None
 
 

@@ -18,4 +18,6 @@ The core workflow is planned around these commands:
 
 Phase 0 establishes packaging, CLI structure, tests, documentation, and small
 example inputs. Phase 1 implements useful local inspection for CSV, Parquet, and
-FITS catalogs.
+FITS catalogs. Phase 2 starts with local curation to explicit Parquet outputs:
+small raw inputs can be curated in memory, while large inputs are expected to be
+prepared as Parquet first.

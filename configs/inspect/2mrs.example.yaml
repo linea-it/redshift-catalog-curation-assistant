@@ -1,0 +1,22 @@
+input_file: tests/data/raw/2mrs_sample.fits
+survey_name: 2MRS
+fits_hdu: 1
+unique_limit: 10
+
+column_patterns:
+  ra:
+    - "^RA$"
+  dec:
+    - "^DEC$"
+  redshift:
+    - "^V$"
+  redshift_error:
+    - "^EV$"
+  quality:
+    - "^FLAGS$"
+  id:
+    - "^TMID$"
+    - "^CATID$"
+  object_type:
+    - "^TYPE$"
+    - "^TYPESRC$"

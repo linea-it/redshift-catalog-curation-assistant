@@ -1,4 +1,4 @@
-input_file: data_not_tracked/spAll-v6_1_3.fits
+input_file: tests/data/raw/sdss_dr19_sample.fits
 survey_name: SDSS_DR19_SPALL
 fits_hdu: 1
 unique_limit: 10

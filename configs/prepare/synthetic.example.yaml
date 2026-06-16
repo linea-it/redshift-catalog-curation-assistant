@@ -1,0 +1,17 @@
+input_file: tests/data/raw/synthetic_redshift_catalog.csv
+output_dir: reports/prepared/synthetic.parquet
+chunk_size_rows: 200000
+large_file_threshold_mb: 100
+target_partition_size_mb: 100
+output_mode: auto
+allow_large_single_output: false
+overwrite: true
+part_prefix: synthetic
+
+dask_cluster:
+  name: local
+  args:
+    n_workers: 3
+    threads_per_worker: 1
+    memory_limit: 2GB
+    dashboard_address:

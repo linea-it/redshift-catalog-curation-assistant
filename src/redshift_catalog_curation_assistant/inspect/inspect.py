@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -16,6 +17,7 @@ COMPRESSED_SUFFIXES = {".gz", ".bz2", ".xz", ".zip"}
 SAMPLE_MAX_COLUMNS = 100
 PARQUET_STATS_BATCH_SIZE = 50
 FITS_STATS_BATCH_SIZE = 8
+REDSHIFT_NULL_WARNING_FRACTION = 0.5
 StatsValue = float | int | None
 STATS_MODES = {"candidates", "all", "none"}
 
@@ -92,7 +94,103 @@ PATTERNS = {
 def load_config(path: Path) -> dict[str, Any]:
     """Load a YAML configuration file."""
     with open(path, "r") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _validate_positive_int(config: dict[str, Any], key: str) -> None:
+    if key not in config:
+        return
+    if not _is_int(config[key]) or config[key] <= 0:
+        raise ValueError(f"{key} must be a positive integer.")
+
+
+def _validate_non_negative_int(config: dict[str, Any], key: str) -> None:
+    if key not in config:
+        return
+    if not _is_int(config[key]) or config[key] < 0:
+        raise ValueError(f"{key} must be an integer >= 0.")
+
+
+def _validate_string_list(config: dict[str, Any], key: str, message: str) -> None:
+    if key not in config:
+        return
+    values = config[key]
+    if not isinstance(values, list | tuple) or not all(isinstance(value, str) for value in values):
+        raise ValueError(message)
+
+
+def _validate_inspect_config(config: Any) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        raise ValueError("Inspect config must be a YAML mapping.")
+    if not config:
+        raise ValueError("Inspect config is empty. Set 'input_file' in YAML or pass --path in the CLI.")
+
+    input_file = config.get("input_file")
+    if input_file is None:
+        raise ValueError("Inspect config requires 'input_file'. Set it in YAML or pass --path in the CLI.")
+    if not isinstance(input_file, str | Path) or not str(input_file).strip():
+        raise ValueError("input_file must be a non-empty path string.")
+
+    survey_name = config.get("survey_name")
+    if survey_name is not None and (not isinstance(survey_name, str) or not survey_name.strip()):
+        raise ValueError("survey_name must be a non-empty string when provided.")
+    output_dir = config.get("output_dir")
+    if output_dir is not None and (not isinstance(output_dir, str | Path) or not str(output_dir).strip()):
+        raise ValueError("output_dir must be a non-empty path string when provided.")
+
+    _validate_positive_int(config, "fits_hdu")
+    _validate_non_negative_int(config, "unique_limit")
+    _validate_non_negative_int(config, "sample_max_columns")
+    _validate_positive_int(config, "parquet_stats_batch_size")
+    _validate_positive_int(config, "fits_stats_batch_size")
+    _validate_positive_int(config, "fits_stats_chunk_rows")
+    _validate_positive_int(config, "chunk_size_rows")
+    _stats_mode(config)
+
+    _validate_string_list(
+        config,
+        "column_names",
+        "column_names must be a list of strings. Set 'column_names' in YAML, "
+        "or pass --column-name/--column-names in the CLI.",
+    )
+    _validate_string_list(
+        config,
+        "column_selection",
+        "column_selection must be a list of column names. Set 'column_selection' in YAML, "
+        "or pass --column-selection/--column-selection-list in the CLI.",
+    )
+
+    column_patterns = config.get("column_patterns", {})
+    if not isinstance(column_patterns, dict):
+        raise ValueError("column_patterns must be a mapping from category names to regex lists.")
+    for category, values in column_patterns.items():
+        if (
+            not isinstance(category, str)
+            or not isinstance(values, list | tuple)
+            or not all(isinstance(value, str) for value in values)
+        ):
+            raise ValueError(f"column_patterns.{category} must be a list of regex strings.")
+
+    dask_threshold_mb = config.get("dask_threshold_mb")
+    if dask_threshold_mb is not None and (not _is_number(dask_threshold_mb) or dask_threshold_mb < 0):
+        raise ValueError("dask_threshold_mb must be a number >= 0 or null.")
+
+    if "dask_cluster" in config and not isinstance(config["dask_cluster"], dict):
+        raise ValueError("dask_cluster must be a mapping. Use YAML for cluster configuration.")
+    if "allow_large_raw_inspect" in config and not isinstance(config["allow_large_raw_inspect"], bool):
+        raise ValueError("allow_large_raw_inspect must be a boolean.")
+    if "parallel_stats" in config and not isinstance(config["parallel_stats"], bool):
+        raise ValueError("parallel_stats must be a boolean.")
+
+    return config
 
 
 def candidate_columns(columns: list[str], patterns: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -189,6 +287,53 @@ def _selected_stats_columns(
     if not selected_numeric and not selected_categorical:
         warnings.append("No candidate columns were eligible for statistics.")
     return selected_numeric, selected_categorical, warnings
+
+
+def _semantic_warnings(
+    candidates: dict[str, list[str]],
+    numeric_columns: list[str],
+    numeric_stats: dict[str, dict[str, StatsValue]],
+) -> list[str]:
+    warnings = []
+    numeric_column_set = set(numeric_columns)
+
+    if not candidates.get("ra"):
+        warnings.append("No RA candidate columns were found.")
+    if not candidates.get("dec"):
+        warnings.append("No DEC candidate columns were found.")
+    if not candidates.get("redshift"):
+        warnings.append("No redshift candidate columns were found.")
+    elif len(candidates["redshift"]) > 1:
+        warnings.append(
+            "Multiple redshift candidate columns were found: " + ", ".join(candidates["redshift"]) + "."
+        )
+
+    non_numeric_ra = [column for column in candidates.get("ra", []) if column not in numeric_column_set]
+    non_numeric_dec = [column for column in candidates.get("dec", []) if column not in numeric_column_set]
+    if non_numeric_ra:
+        warnings.append("RA candidate columns are not numeric: " + ", ".join(non_numeric_ra) + ".")
+    if non_numeric_dec:
+        warnings.append("DEC candidate columns are not numeric: " + ", ".join(non_numeric_dec) + ".")
+
+    null_warnings = []
+    for column in candidates.get("redshift", []):
+        stats = numeric_stats.get(column)
+        if not stats:
+            continue
+        count = stats.get("count")
+        null_count = stats.get("null_count")
+        if not isinstance(count, int | float) or not isinstance(null_count, int | float):
+            continue
+        total = count + null_count
+        if total <= 0:
+            continue
+        null_fraction = null_count / total
+        if null_fraction >= REDSHIFT_NULL_WARNING_FRACTION and null_count > 0:
+            null_warnings.append(f"{column} ({null_fraction:.1%} null)")
+    if null_warnings:
+        warnings.append("Redshift candidate columns have many null values: " + ", ".join(null_warnings) + ".")
+
+    return warnings
 
 
 def _is_dask_dataframe(df: Any) -> bool:
@@ -342,6 +487,112 @@ def _parquet_to_pandas(dataset: Any, columns: list[str], limit: int | None = Non
     return table.to_pandas()
 
 
+def _parallel_stats_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("parallel_stats", False))
+
+
+def _stats_partitions(
+    partial_stats: list[dict[str, dict[str, StatsValue]]],
+) -> dict[str, dict[str, StatsValue]]:
+    aggregates: dict[str, dict[str, float]] = {}
+    for stats in partial_stats:
+        for column, values in stats.items():
+            count = values.get("count") or 0
+            null_count = values.get("null_count") or 0
+            mean = values.get("mean")
+            std = values.get("std")
+            min_value = values.get("min")
+            max_value = values.get("max")
+            if not isinstance(count, int | float) or count <= 0:
+                aggregate = aggregates.setdefault(
+                    column,
+                    {
+                        "count": 0.0,
+                        "null_count": 0.0,
+                        "sum": 0.0,
+                        "sum_sq_delta": 0.0,
+                        "min": math.inf,
+                        "max": -math.inf,
+                    },
+                )
+                aggregate["null_count"] += float(null_count) if isinstance(null_count, int | float) else 0.0
+                continue
+
+            aggregate = aggregates.setdefault(
+                column,
+                {
+                    "count": 0.0,
+                    "null_count": 0.0,
+                    "sum": 0.0,
+                    "sum_sq_delta": 0.0,
+                    "min": math.inf,
+                    "max": -math.inf,
+                },
+            )
+            count_float = float(count)
+            mean_float = float(mean) if isinstance(mean, int | float) else 0.0
+            std_float = float(std) if isinstance(std, int | float) else 0.0
+            aggregate["count"] += count_float
+            aggregate["null_count"] += float(null_count) if isinstance(null_count, int | float) else 0.0
+            aggregate["sum"] += mean_float * count_float
+            if count_float > 1:
+                aggregate["sum_sq_delta"] += std_float**2 * (count_float - 1.0)
+            if isinstance(min_value, int | float):
+                aggregate["min"] = min(aggregate["min"], float(min_value))
+            if isinstance(max_value, int | float):
+                aggregate["max"] = max(aggregate["max"], float(max_value))
+
+    merged: dict[str, dict[str, StatsValue]] = {}
+    for column, aggregate in aggregates.items():
+        count = int(aggregate["count"])
+        null_count = int(aggregate["null_count"])
+        if count <= 0:
+            merged[column] = {
+                "count": 0,
+                "null_count": null_count,
+                "mean": None,
+                "std": None,
+                "min": None,
+                "max": None,
+            }
+            continue
+        mean = aggregate["sum"] / count
+        total_sum_sq_delta = aggregate["sum_sq_delta"]
+        for stats in partial_stats:
+            column_stats = stats.get(column)
+            if not column_stats:
+                continue
+            partial_count = column_stats.get("count") or 0
+            partial_mean = column_stats.get("mean")
+            if not isinstance(partial_count, int | float) or partial_count <= 0:
+                continue
+            if not isinstance(partial_mean, int | float):
+                continue
+            total_sum_sq_delta += float(partial_count) * (float(partial_mean) - mean) ** 2
+        merged[column] = {
+            "count": count,
+            "null_count": null_count,
+            "mean": mean,
+            "std": math.sqrt(total_sum_sq_delta / (count - 1)) if count > 1 else None,
+            "min": aggregate["min"] if aggregate["min"] != math.inf else None,
+            "max": aggregate["max"] if aggregate["max"] != -math.inf else None,
+        }
+    return merged
+
+
+def _merge_unique_partitions(partials: list[dict[str, list[str]]], limit: int) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for partial in partials:
+        for column, values in partial.items():
+            current = merged.setdefault(column, [])
+            for value in values:
+                if value not in current:
+                    current.append(value)
+                if len(current) >= limit:
+                    break
+    return merged
+
+
 def _parquet_stats_columns(
     schema: Any, columns: list[str], candidate_cols: list[str], config: dict[str, Any]
 ) -> tuple[list[str], list[str], list[str]]:
@@ -368,6 +619,31 @@ def _parquet_numeric_stats(
     return stats
 
 
+def _parquet_fragment_stats(fragment: Any, columns: list[str]) -> dict[str, dict[str, StatsValue]]:
+    table = fragment.to_table(columns=columns)
+    return gather_stats(table.to_pandas())
+
+
+def _parquet_numeric_stats_parallel(
+    dataset: Any, columns: list[str], batch_size: int
+) -> dict[str, dict[str, StatsValue]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    fragments = list(dataset.get_fragments())
+    for fragment in fragments:
+        for start in range(0, len(columns), batch_size):
+            batch_columns = columns[start : start + batch_size]
+            tasks.append(delayed(_parquet_fragment_stats)(fragment, batch_columns))
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _stats_partitions(partials)
+
+
 def _parquet_categorical_uniques(
     dataset: Any, columns: list[str], batch_size: int, limit: int
 ) -> dict[str, list[str]]:
@@ -379,6 +655,31 @@ def _parquet_categorical_uniques(
         batch_columns = columns[start : start + batch_size]
         uniques.update(gather_categorical_uniques(_parquet_to_pandas(dataset, batch_columns), limit=limit))
     return uniques
+
+
+def _parquet_fragment_uniques(fragment: Any, columns: list[str], limit: int) -> dict[str, list[str]]:
+    table = fragment.to_table(columns=columns)
+    return gather_categorical_uniques(table.to_pandas(), limit=limit)
+
+
+def _parquet_categorical_uniques_parallel(
+    dataset: Any, columns: list[str], batch_size: int, limit: int
+) -> dict[str, list[str]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    fragments = list(dataset.get_fragments())
+    for fragment in fragments:
+        for start in range(0, len(columns), batch_size):
+            batch_columns = columns[start : start + batch_size]
+            tasks.append(delayed(_parquet_fragment_uniques)(fragment, batch_columns, limit))
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _merge_unique_partitions(partials, limit=limit)
 
 
 def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -410,6 +711,29 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
     categorical_cols = [column for column in categorical_cols if column in columns]
     warnings.extend(stats_warnings)
     dtypes = _parquet_dtypes(schema)
+    unique_limit = int(config.get("unique_limit", 10))
+    if _parallel_stats_enabled(config):
+        from ..executor import dask_client_context, dask_cluster_config
+
+        cluster_config = dask_cluster_config(config)
+        logs_dir = _dask_logs_dir(cluster_config, Path("reports") / survey)
+        with dask_client_context(cluster_config, logs_dir=logs_dir):
+            numeric_stats = _parquet_numeric_stats_parallel(dataset, numeric_cols, batch_size)
+            categorical_uniques = _parquet_categorical_uniques_parallel(
+                dataset,
+                categorical_cols,
+                batch_size=batch_size,
+                limit=unique_limit,
+            )
+    else:
+        numeric_stats = _parquet_numeric_stats(dataset, numeric_cols, batch_size)
+        categorical_uniques = _parquet_categorical_uniques(
+            dataset,
+            categorical_cols,
+            batch_size=batch_size,
+            limit=unique_limit,
+        )
+    warnings.extend(_semantic_warnings(candidates, _parquet_numeric_columns(schema), numeric_stats))
 
     return {
         "survey": survey,
@@ -420,13 +744,8 @@ def _build_parquet_report(input_path: Path, survey: str, config: dict[str, Any])
         "columns": columns,
         "dtypes": {column: dtypes[column] for column in columns},
         "candidates": candidates,
-        "numeric_stats": _parquet_numeric_stats(dataset, numeric_cols, batch_size),
-        "categorical_uniques": _parquet_categorical_uniques(
-            dataset,
-            categorical_cols,
-            batch_size=batch_size,
-            limit=int(config.get("unique_limit", 10)),
-        ),
+        "numeric_stats": numeric_stats,
+        "categorical_uniques": categorical_uniques,
         "sample": sample.to_dict(orient="records"),
         "warnings": warnings,
     }
@@ -508,6 +827,49 @@ def _fits_numeric_stats(
     return stats
 
 
+def _fits_chunk_dataframe(
+    input_path: str, fits_hdu: int, columns: list[str], start: int, stop: int
+) -> pd.DataFrame:
+    import fitsio
+
+    with fitsio.FITS(input_path) as fits_file:
+        data = fits_file[fits_hdu].read(columns=columns, rows=range(start, stop))
+    return pd.DataFrame({column: np.asarray(data[column]) for column in columns})
+
+
+def _fits_chunk_stats(
+    input_path: str, fits_hdu: int, columns: list[str], start: int, stop: int
+) -> dict[str, dict[str, StatsValue]]:
+    return gather_stats(_fits_chunk_dataframe(input_path, fits_hdu, columns, start, stop))
+
+
+def _fits_numeric_stats_parallel(
+    input_path: Path,
+    fits_hdu: int,
+    n_rows: int,
+    columns: list[str],
+    batch_size: int,
+    chunk_rows: int,
+) -> dict[str, dict[str, StatsValue]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    for row_start in range(0, n_rows, chunk_rows):
+        row_stop = min(row_start + chunk_rows, n_rows)
+        for column_start in range(0, len(columns), batch_size):
+            batch_columns = columns[column_start : column_start + batch_size]
+            tasks.append(
+                delayed(_fits_chunk_stats)(str(input_path), fits_hdu, batch_columns, row_start, row_stop)
+            )
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _stats_partitions(partials)
+
+
 def _fits_categorical_uniques(
     fits_hdu: Any, columns: list[str], batch_size: int, limit: int
 ) -> dict[str, list[str]]:
@@ -518,6 +880,43 @@ def _fits_categorical_uniques(
         batch_df = pd.DataFrame({column: np.asarray(data[column]) for column in batch_columns})
         uniques.update(gather_categorical_uniques(batch_df, limit=limit))
     return uniques
+
+
+def _fits_chunk_uniques(
+    input_path: str, fits_hdu: int, columns: list[str], start: int, stop: int, limit: int
+) -> dict[str, list[str]]:
+    frame = _fits_chunk_dataframe(input_path, fits_hdu, columns, start, stop)
+    return gather_categorical_uniques(frame, limit)
+
+
+def _fits_categorical_uniques_parallel(
+    input_path: Path,
+    fits_hdu: int,
+    n_rows: int,
+    columns: list[str],
+    batch_size: int,
+    chunk_rows: int,
+    limit: int,
+) -> dict[str, list[str]]:
+    if not columns:
+        return {}
+
+    from dask import delayed
+
+    tasks = []
+    for row_start in range(0, n_rows, chunk_rows):
+        row_stop = min(row_start + chunk_rows, n_rows)
+        for column_start in range(0, len(columns), batch_size):
+            batch_columns = columns[column_start : column_start + batch_size]
+            tasks.append(
+                delayed(_fits_chunk_uniques)(
+                    str(input_path), fits_hdu, batch_columns, row_start, row_stop, limit
+                )
+            )
+    if not tasks:
+        return {}
+    partials = list(delayed(list)(tasks).compute())
+    return _merge_unique_partitions(partials, limit=limit)
 
 
 def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -572,23 +971,54 @@ def _build_fits_report(input_path: Path, survey: str, config: dict[str, Any]) ->
         if batch_size <= 0:
             msg = "fits_stats_batch_size must be greater than zero. This option is available in YAML config."
             raise ValueError(msg)
+        n_rows = int(header.get("NAXIS2", 0) or 0)
+        unique_limit = int(config.get("unique_limit", 10))
+        if _parallel_stats_enabled(config):
+            from ..executor import dask_client_context, dask_cluster_config
+
+            cluster_config = dask_cluster_config(config)
+            chunk_rows = int(config.get("fits_stats_chunk_rows", config.get("chunk_size_rows", 200_000)))
+            with dask_client_context(
+                cluster_config, logs_dir=_dask_logs_dir(cluster_config, Path("reports") / survey)
+            ):
+                numeric_stats = _fits_numeric_stats_parallel(
+                    input_path,
+                    fits_hdu,
+                    n_rows,
+                    scalar_numeric_cols,
+                    batch_size,
+                    chunk_rows,
+                )
+                categorical_uniques = _fits_categorical_uniques_parallel(
+                    input_path,
+                    fits_hdu,
+                    n_rows,
+                    scalar_categorical_cols,
+                    batch_size,
+                    chunk_rows,
+                    unique_limit,
+                )
+        else:
+            numeric_stats = _fits_numeric_stats(hdu, scalar_numeric_cols, batch_size)
+            categorical_uniques = _fits_categorical_uniques(
+                hdu,
+                scalar_categorical_cols,
+                batch_size=batch_size,
+                limit=unique_limit,
+            )
+        warnings.extend(_semantic_warnings(candidates, _fits_numeric_columns(formats), numeric_stats))
 
         return {
             "survey": survey,
             "input_file": str(input_path),
-            "n_rows": int(header.get("NAXIS2", 0) or 0),
+            "n_rows": n_rows,
             "n_columns": len(all_columns),
             "n_columns_selected": len(columns),
             "columns": columns,
             "dtypes": formats,
             "candidates": candidates,
-            "numeric_stats": _fits_numeric_stats(hdu, scalar_numeric_cols, batch_size),
-            "categorical_uniques": _fits_categorical_uniques(
-                hdu,
-                scalar_categorical_cols,
-                batch_size=batch_size,
-                limit=int(config.get("unique_limit", 10)),
-            ),
+            "numeric_stats": numeric_stats,
+            "categorical_uniques": categorical_uniques,
             "sample": sample,
             "warnings": warnings,
         }
@@ -707,6 +1137,11 @@ def _build_report(
 
     stats_df = report_df[numeric_cols] if numeric_cols else report_df[[]]
     categorical_df = report_df[categorical_cols] if categorical_cols else report_df[[]]
+    numeric_stats = gather_stats(stats_df)
+    categorical_uniques = gather_categorical_uniques(
+        categorical_df, limit=int(config.get("unique_limit", 10))
+    )
+    warnings.extend(_semantic_warnings(candidates, numeric_columns, numeric_stats))
 
     return {
         "survey": survey,
@@ -717,13 +1152,90 @@ def _build_report(
         "columns": columns,
         "dtypes": {c: str(t) for c, t in report_df.dtypes.items()},
         "candidates": candidates,
-        "numeric_stats": gather_stats(stats_df),
-        "categorical_uniques": gather_categorical_uniques(
-            categorical_df, limit=int(config.get("unique_limit", 10))
-        ),
+        "numeric_stats": numeric_stats,
+        "categorical_uniques": categorical_uniques,
         "sample": sample.to_dict(orient="records"),
         "warnings": warnings,
     }
+
+
+def _markdown_value(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    if value is None:
+        return ""
+    return str(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    lines.extend("| " + " | ".join(_markdown_value(value) for value in row) + " |" for row in rows)
+    return "\n".join(lines)
+
+
+def _append_columns_markdown(md: list[str], report: dict[str, Any]) -> None:
+    md.append("## Columns\n")
+    rows = [
+        [index, column, report["dtypes"].get(column, "")]
+        for index, column in enumerate(report["columns"], start=1)
+    ]
+    md.append(_markdown_table(["#", "column", "dtype"], rows) if rows else "No columns selected.")
+    md.append("")
+
+
+def _append_numeric_stats_markdown(md: list[str], report: dict[str, Any]) -> None:
+    md.append("## Numeric statistics\n")
+    stats = report["numeric_stats"]
+    if not stats:
+        md.append("No numeric statistics were collected.\n")
+        return
+
+    stat_keys = ["count", "null_count", "mean", "std", "min", "max"]
+    rows = [[column, *(values.get(key) for key in stat_keys)] for column, values in stats.items()]
+    md.append(_markdown_table(["column", *stat_keys], rows))
+    md.append("")
+
+
+def _append_categorical_uniques_markdown(md: list[str], report: dict[str, Any]) -> None:
+    md.append("## Categorical unique values\n")
+    uniques = report["categorical_uniques"]
+    if not uniques:
+        md.append("No categorical unique values were collected.\n")
+        return
+
+    rows = [
+        [column, json.dumps(values, default=json_default, ensure_ascii=False)]
+        for column, values in uniques.items()
+    ]
+    md.append(_markdown_table(["column", "values"], rows))
+    md.append("")
+
+
+def _append_sample_markdown(md: list[str], report: dict[str, Any]) -> None:
+    md.append("## Sample rows\n")
+    sample = report["sample"]
+    if not sample:
+        md.append("No sample rows were collected.\n")
+        return
+
+    md.append("```json")
+    md.append(json.dumps(sample, indent=2, default=json_default, ensure_ascii=False))
+    md.append("```\n")
+
+
+def _append_warnings_markdown(md: list[str], report: dict[str, Any]) -> None:
+    md.append("## Warnings\n")
+    warnings = report["warnings"]
+    if not warnings:
+        md.append("No warnings.\n")
+        return
+
+    for warning in warnings:
+        md.append(f"- {warning}")
+    md.append("")
 
 
 def _write_report(outdir: Path, survey: str, input_path: Path, report: dict[str, Any]) -> None:
@@ -736,16 +1248,21 @@ def _write_report(outdir: Path, survey: str, input_path: Path, report: dict[str,
     )
     md.append("## Candidate columns by category\n")
     for k, v in report["candidates"].items():
-        md.append(f"- **{k}**: {', '.join(v) if v else '—'}\n")
+        md.append(f"- **{k}**: {', '.join(v) if v else 'None'}\n")
+    _append_columns_markdown(md, report)
+    _append_numeric_stats_markdown(md, report)
+    _append_categorical_uniques_markdown(md, report)
+    _append_sample_markdown(md, report)
+    _append_warnings_markdown(md, report)
     (outdir / "inspect_report.md").write_text("\n".join(md))
 
 
 def run_inspect_config(config: dict[str, Any]) -> Path:
     """Run catalog inspection from a loaded config and write reports."""
-    cfg = config
+    cfg = _validate_inspect_config(config)
     input_path = Path(cfg["input_file"])
     survey = cfg.get("survey_name", input_path.stem)
-    outdir = Path("reports") / survey
+    outdir = Path(cfg["output_dir"]) if cfg.get("output_dir") is not None else Path("reports") / survey
 
     if _is_parquet_input(input_path):
         report = _build_parquet_report(input_path, survey, cfg)

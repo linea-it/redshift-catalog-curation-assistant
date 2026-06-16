@@ -1,0 +1,25 @@
+input_file: tests/data/raw/synthetic_redshift_catalog.csv
+output_dir: reports/curated/synthetic.parquet
+overwrite: true
+
+column_selection:
+  - object_id
+  - ra
+  - dec
+  - z_spec
+  - quality_flag
+
+coordinates:
+  ra_column: ra
+  dec_column: dec
+
+redshift:
+  column: z_spec
+
+transformations:
+  - type: add_constant_column
+    name: survey_name
+    value: SYNTHETIC_REDSHIFT
+  - type: cast
+    column: quality_flag
+    dtype: float64

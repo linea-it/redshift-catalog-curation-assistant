@@ -1,0 +1,73 @@
+input_file: tests/data/raw/2dfgrs_sample.idz.gz
+output_dir: reports/curated/2dfgrs.parquet
+overwrite: true
+
+column_names:
+  - serial
+  - spectra
+  - name
+  - UKST
+  - ra_b1950_h
+  - ra_b1950_m
+  - ra_b1950_s
+  - dec_b1950_d
+  - dec_b1950_m
+  - dec_b1950_s
+  - ra_j2000_h
+  - ra_j2000_m
+  - ra_j2000_s
+  - dec_j2000_d
+  - dec_j2000_m
+  - dec_j2000_s
+  - BJG
+  - BJSEL
+  - BJG_OLD
+  - BJSELOLD
+  - GALEXT
+  - SB_BJ
+  - SR_R
+  - z
+  - z_helio
+  - obsrun
+  - quality
+  - abemma
+  - Z_ABS
+  - KBESTR
+  - R_CRCOR
+  - Z_EMI
+  - NMBEST
+  - SNR
+  - ETA_TYPE
+
+column_selection:
+  - serial
+  - name
+  - ra_j2000_deg
+  - dec_j2000_deg
+  - z
+  - z_helio
+  - quality
+  - ETA_TYPE
+
+coordinates:
+  ra_column: ra_j2000_deg
+  dec_column: dec_j2000_deg
+
+redshift:
+  column: z
+  invalid_policy: flag
+
+transformations:
+  - type: ra_hms_to_degrees
+    output_column: ra_j2000_deg
+    hours: ra_j2000_h
+    minutes: ra_j2000_m
+    seconds: ra_j2000_s
+  - type: dec_dms_to_degrees
+    output_column: dec_j2000_deg
+    degrees: dec_j2000_d
+    arcminutes: dec_j2000_m
+    arcseconds: dec_j2000_s
+  - type: add_constant_column
+    name: survey_name
+    value: 2DFGRS
