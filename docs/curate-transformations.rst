@@ -156,8 +156,10 @@ Coalesce Redshift Candidates
 ----------------------------
 
 Use ``coalesce_redshift`` when a catalog has prioritized redshift candidates.
-The first value in the valid range ``(-0.01, 15)`` is selected. If no candidate
-is valid, ``invalid_value`` is written.
+The first value in the configured valid redshift range is selected. By default
+that range is ``-0.1 < z < 20`` because ``redshift.allow_blueshifts`` defaults
+to ``true``. If ``redshift.allow_blueshifts`` is ``false``, the range is
+``0 < z < 20``. If no candidate is valid, ``invalid_value`` is written.
 
 .. code-block:: yaml
 
@@ -173,6 +175,7 @@ is valid, ``invalid_value`` is written.
 
    redshift:
      column: z_final
+     allow_blueshifts: true
      invalid_policy: flag
      invalid_value: -1
 
@@ -183,6 +186,23 @@ is valid, ``invalid_value`` is written.
          - z_spec
          - z_phot
        invalid_value: -1
+
+Filter By Redshift
+------------------
+
+Use ``redshift.filters`` to keep only rows matching simple comparisons on the
+final redshift column. Filters are applied after transformations and standard
+redshift validation. Multiple filters are combined with logical AND.
+
+.. code-block:: yaml
+
+   redshift:
+     column: z_final
+     filters:
+       - op: ">"
+         value: 1.6
+       - op: "<"
+         value: 9
 
 Generated Column Placement
 --------------------------

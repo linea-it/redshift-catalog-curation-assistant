@@ -41,6 +41,10 @@ def minimal_curate_config() -> dict:
         ({"column_selection": ["ra", 1]}, "column_selection must be a list"),
         ({"coordinates": "ra,dec"}, "coordinates.ra_column and coordinates.dec_column"),
         ({"redshift": "z"}, "redshift.column"),
+        ({"redshift": {"column": "z", "allow_blueshifts": "yes"}}, "redshift.allow_blueshifts"),
+        ({"redshift": {"column": "z", "filters": "z < 9"}}, "redshift.filters must be a list"),
+        ({"redshift": {"column": "z", "filters": [{"op": "between", "value": 9}]}}, "redshift.filters"),
+        ({"redshift": {"column": "z", "filters": [{"op": "<", "value": "9"}]}}, "redshift.filters"),
         ({"overwrite": "yes"}, "overwrite must be true or false"),
         ({"allow_large_single_output": 1}, "allow_large_single_output must be true or false"),
         ({"large_file_threshold_mb": "100"}, "large_file_threshold_mb must be a non-negative number"),
@@ -78,6 +82,15 @@ def test_curate_rejects_invalid_config_fields(update, message):
         (
             {"type": "coalesce_redshift", "output_column": "z", "columns": []},
             "coalesce_redshift transformations require columns",
+        ),
+        (
+            {
+                "type": "coalesce_redshift",
+                "output_column": "z",
+                "columns": ["z_spec", "z_phot"],
+                "allow_blueshifts": "yes",
+            },
+            "coalesce_redshift allow_blueshifts",
         ),
         (
             {"type": "skycoord_to_degrees", "ra_column": "ra"},
@@ -519,7 +532,7 @@ def test_curate_rejects_invalid_redshift_by_default(tmp_path):
 def test_curate_can_flag_invalid_redshifts(tmp_path):
     """Verify users can opt into mapping invalid redshifts to the standard flag."""
     csv = tmp_path / "sample.csv"
-    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n11.0,-1.1,99.0\n12.0,-1.2,-0.02\n")
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n11.0,-1.1,99.0\n12.0,-1.2,-0.2\n")
     output_dir = tmp_path / "curated"
 
     curate_catalog(
@@ -542,11 +555,143 @@ def test_curate_can_flag_invalid_redshifts(tmp_path):
     assert df["z"].tolist() == [0.1, -1.0, -1.0]
 
 
+def test_curate_allows_small_blueshifts_by_default(tmp_path):
+    """Verify the default redshift range preserves the existing blueshift allowance."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,-0.005\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+            },
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z"].tolist() == [-0.005]
+
+
+def test_curate_can_disallow_blueshifts(tmp_path):
+    """Verify allow_blueshifts false tightens the standard redshift range."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,-0.005\n")
+
+    with pytest.raises(CurateError, match=r"required range \(0.0, 20.0\)"):
+        curate_catalog(
+            {
+                "input_file": str(csv),
+                "output_dir": str(tmp_path / "curated"),
+                "coordinates": {
+                    "ra_column": "ra",
+                    "dec_column": "dec",
+                },
+                "redshift": {
+                    "column": "z",
+                    "allow_blueshifts": False,
+                },
+            }
+        )
+
+
+def test_curate_can_flag_blueshifts_when_disallowed(tmp_path):
+    """Verify disallowed blueshifts can be mapped to the invalid-redshift flag."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n11.0,-1.1,-0.005\n12.0,-1.2,0.0\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+                "allow_blueshifts": False,
+                "invalid_policy": "flag",
+            },
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z"].tolist() == [0.1, -1.0, -1.0]
+
+
+def test_curate_filters_redshift_range(tmp_path):
+    """Verify users can filter curated rows by final redshift comparisons."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.5\n11.0,-1.1,1.6\n12.0,-1.2,2.0\n13.0,-1.3,9.0\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+                "filters": [
+                    {"op": ">", "value": 1.6},
+                    {"op": "<", "value": 9},
+                ],
+            },
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z"].tolist() == [2.0]
+
+
+def test_curate_redshift_filters_exclude_flagged_invalids(tmp_path):
+    """Verify flagged invalid redshifts are removed when any redshift filter is configured."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.5\n11.0,-1.1,99.0\n12.0,-1.2,-0.2\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+                "invalid_policy": "flag",
+                "filters": [
+                    {"op": "<", "value": 9},
+                ],
+            },
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z"].tolist() == [0.5]
+
+
 def test_curate_coalesces_redshift_columns_by_validity(tmp_path):
     """Verify z_final can be generated from prioritized redshift candidates."""
     csv = tmp_path / "sample.csv"
     csv.write_text(
-        "ra,dec,z_spec,z_phot\n" "10.0,-1.0,0.10,0.20\n" "11.0,-1.1,99.00,0.30\n" "12.0,-1.2,-0.02,99.00\n"
+        "ra,dec,z_spec,z_phot\n" "10.0,-1.0,0.10,0.20\n" "11.0,-1.1,99.00,0.30\n" "12.0,-1.2,-0.2,99.00\n"
     )
     output_dir = tmp_path / "curated"
 
@@ -576,6 +721,41 @@ def test_curate_coalesces_redshift_columns_by_validity(tmp_path):
 
     df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
     assert df["z_final"].tolist() == [0.1, 0.3, -1.0]
+
+
+def test_curate_coalesce_redshift_respects_disallowed_blueshifts(tmp_path):
+    """Verify coalesce_redshift uses redshift.allow_blueshifts by default."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z_spec,z_phot\n10.0,-1.0,-0.005,0.20\n11.0,-1.1,-0.004,-0.003\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "column_selection": ["ra", "dec", "z_final"],
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z_final",
+                "allow_blueshifts": False,
+                "invalid_policy": "flag",
+            },
+            "transformations": [
+                {
+                    "type": "coalesce_redshift",
+                    "output_column": "z_final",
+                    "columns": ["z_spec", "z_phot"],
+                }
+            ],
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z_final"].tolist() == [0.2, -1.0]
 
 
 def test_curate_multi_parquet_large_input_writes_partitioned_output(tmp_path, monkeypatch):
