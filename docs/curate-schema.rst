@@ -252,7 +252,9 @@ redshift validation.
   Creates a final redshift from prioritized candidates. The first valid value in
   the configured standard redshift range is used; if none are valid,
   ``invalid_value`` is written. By default this follows
-  ``redshift.allow_blueshifts``.
+  ``redshift.allow_blueshifts``. Optionally, ``label_column`` writes the source
+  label for the candidate that supplied the final redshift. If ``labels`` is not
+  provided, the candidate column names are used as labels.
 
   .. code-block:: yaml
 
@@ -261,6 +263,11 @@ redshift validation.
        columns:
          - z_spec
          - z_phot
+       labels:
+         - s
+         - p
+       label_column: z_source
+       invalid_label: none
        invalid_value: -1
 
 Column Pushdown

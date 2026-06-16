@@ -93,6 +93,33 @@ def test_curate_rejects_invalid_config_fields(update, message):
             "coalesce_redshift allow_blueshifts",
         ),
         (
+            {
+                "type": "coalesce_redshift",
+                "output_column": "z",
+                "columns": ["z_spec", "z_phot"],
+                "label_column": "",
+            },
+            "coalesce_redshift label_column",
+        ),
+        (
+            {
+                "type": "coalesce_redshift",
+                "output_column": "z",
+                "columns": ["z_spec", "z_phot"],
+                "labels": ["s"],
+            },
+            "coalesce_redshift labels must have the same length",
+        ),
+        (
+            {
+                "type": "coalesce_redshift",
+                "output_column": "z",
+                "columns": ["z_spec", "z_phot"],
+                "labels": ["s", ""],
+            },
+            "coalesce_redshift labels must be a list",
+        ),
+        (
             {"type": "skycoord_to_degrees", "ra_column": "ra"},
             "skycoord_to_degrees transformations require dec_column",
         ),
@@ -721,6 +748,81 @@ def test_curate_coalesces_redshift_columns_by_validity(tmp_path):
 
     df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
     assert df["z_final"].tolist() == [0.1, 0.3, -1.0]
+
+
+def test_curate_coalesce_redshift_writes_source_labels(tmp_path):
+    """Verify coalesce_redshift can record which candidate supplied the final redshift."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text(
+        "ra,dec,z_spec,z_phot\n" "10.0,-1.0,0.10,0.20\n" "11.0,-1.1,99.00,0.30\n" "12.0,-1.2,-0.2,99.00\n"
+    )
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "column_selection": ["ra", "dec", "z_final", "z_source"],
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z_final",
+                "invalid_policy": "flag",
+            },
+            "transformations": [
+                {
+                    "type": "coalesce_redshift",
+                    "output_column": "z_final",
+                    "columns": ["z_spec", "z_phot"],
+                    "labels": ["s", "p"],
+                    "label_column": "z_source",
+                    "invalid_label": "none",
+                }
+            ],
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z_final"].tolist() == [0.1, 0.3, -1.0]
+    assert df["z_source"].tolist() == ["s", "p", "none"]
+
+
+def test_curate_coalesce_redshift_label_defaults_to_column_names(tmp_path):
+    """Verify coalesce labels default to candidate column names."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z_spec,z_phot\n10.0,-1.0,99.00,0.20\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "column_selection": ["ra", "dec", "z_final", "z_source"],
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z_final",
+                "invalid_policy": "flag",
+            },
+            "transformations": [
+                {
+                    "type": "coalesce_redshift",
+                    "output_column": "z_final",
+                    "columns": ["z_spec", "z_phot"],
+                    "label_column": "z_source",
+                }
+            ],
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z_source"].tolist() == ["z_phot"]
 
 
 def test_curate_coalesce_redshift_respects_disallowed_blueshifts(tmp_path):

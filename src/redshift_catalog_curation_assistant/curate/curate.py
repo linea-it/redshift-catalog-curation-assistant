@@ -327,6 +327,20 @@ def _validate_coalesce_redshift(transformation: dict[str, Any]) -> None:
     allow_blueshifts = transformation.get("allow_blueshifts")
     if allow_blueshifts is not None and not isinstance(allow_blueshifts, bool):
         raise CurateError("coalesce_redshift allow_blueshifts must be true or false.")
+    label_column = transformation.get("label_column")
+    if label_column is not None and (not isinstance(label_column, str) or not label_column.strip()):
+        raise CurateError("coalesce_redshift label_column must be a non-empty string.")
+    labels = transformation.get("labels")
+    if labels is not None:
+        if not isinstance(labels, list | tuple) or not all(
+            isinstance(label, str) and label.strip() for label in labels
+        ):
+            raise CurateError("coalesce_redshift labels must be a list of non-empty strings.")
+        if isinstance(columns, list | tuple) and len(labels) != len(columns):
+            raise CurateError("coalesce_redshift labels must have the same length as columns.")
+    invalid_label = transformation.get("invalid_label")
+    if invalid_label is not None and (not isinstance(invalid_label, str) or not invalid_label.strip()):
+        raise CurateError("coalesce_redshift invalid_label must be a non-empty string.")
 
 
 def _validate_skycoord_to_degrees(transformation: dict[str, Any]) -> None:
@@ -400,10 +414,16 @@ def _transformation_generated_columns(transformation: dict[str, Any]) -> list[st
     transform_type = transformation.get("type")
     if transform_type == "add_constant_column":
         return [transformation["name"]] if isinstance(transformation.get("name"), str) else []
-    if transform_type in {"ra_hms_to_degrees", "dec_dms_to_degrees", "coalesce_redshift"}:
+    if transform_type in {"ra_hms_to_degrees", "dec_dms_to_degrees"}:
         if isinstance(transformation.get("output_column"), str):
             return [transformation["output_column"]]
         return []
+    if transform_type == "coalesce_redshift":
+        generated = []
+        for column in [transformation.get("output_column"), transformation.get("label_column")]:
+            if isinstance(column, str):
+                generated.append(column)
+        return generated
     if transform_type == "velocity_to_redshift":
         generated = []
         if isinstance(transformation.get("output_column"), str):
@@ -725,6 +745,9 @@ def _coalesce_redshift(df: Any, transformation: dict[str, Any]) -> tuple[Any, li
     columns = transformation.get("columns")
     invalid_value = transformation.get("invalid_value", DEFAULT_INVALID_REDSHIFT_VALUE)
     allow_blueshifts = transformation.get("allow_blueshifts", True)
+    label_column = transformation.get("label_column")
+    labels = transformation.get("labels")
+    invalid_label = transformation.get("invalid_label", "invalid")
     if not isinstance(output_column, str) or not output_column.strip():
         raise CurateError("coalesce_redshift requires a non-empty output_column.")
     if (
@@ -737,16 +760,47 @@ def _coalesce_redshift(df: Any, transformation: dict[str, Any]) -> tuple[Any, li
         raise CurateError("coalesce_redshift invalid_value must be numeric.")
     if not isinstance(allow_blueshifts, bool):
         raise CurateError("coalesce_redshift allow_blueshifts must be true or false.")
+    if label_column is not None and (not isinstance(label_column, str) or not label_column.strip()):
+        raise CurateError("coalesce_redshift label_column must be a non-empty string.")
+    if labels is not None:
+        if not isinstance(labels, list | tuple) or not all(
+            isinstance(label, str) and label.strip() for label in labels
+        ):
+            raise CurateError("coalesce_redshift labels must be a list of non-empty strings.")
+        if len(labels) != len(columns):
+            raise CurateError("coalesce_redshift labels must have the same length as columns.")
+    if not isinstance(invalid_label, str) or not invalid_label.strip():
+        raise CurateError("coalesce_redshift invalid_label must be a non-empty string.")
     output_column = cast(str, output_column)
     columns = cast(list[str], list(columns))
+    labels = cast(list[str], list(labels) if labels is not None else list(columns))
     _ensure_columns(df, columns, "coalesce_redshift")
 
-    result = df[columns[0]].where(_valid_redshift_mask(df[columns[0]], allow_blueshifts), invalid_value)
-    for column in columns[1:]:
-        candidate = df[column].where(_valid_redshift_mask(df[column], allow_blueshifts), invalid_value)
-        result = result.where(result != invalid_value, candidate)
+    valid_mask = _valid_redshift_mask(df[columns[0]], allow_blueshifts)
+    result = df[columns[0]].where(valid_mask, invalid_value)
+    generated = [output_column]
+    label_result = None
+    if label_column is not None:
+        label_column = cast(str, label_column)
+        label_result = (
+            df[columns[0]].astype("object").where(~valid_mask, labels[0]).where(valid_mask, invalid_label)
+        )
+        generated.append(label_column)
+
+    for column, label in zip(columns[1:], labels[1:], strict=False):
+        valid_mask = _valid_redshift_mask(df[column], allow_blueshifts)
+        candidate = df[column].where(valid_mask, invalid_value)
+        use_candidate = result == invalid_value
+        result = result.where(~use_candidate, candidate)
+        if label_result is not None:
+            candidate_label = (
+                df[column].astype("object").where(~valid_mask, label).where(valid_mask, invalid_label)
+            )
+            label_result = label_result.where(~use_candidate, candidate_label)
     df[output_column] = result
-    return df, [output_column]
+    if label_column is not None and label_result is not None:
+        df[label_column] = label_result
+    return df, generated
 
 
 def _skycoord_to_degrees(df: Any, transformation: dict[str, Any]) -> tuple[Any, list[str]]:

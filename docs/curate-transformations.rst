@@ -185,7 +185,18 @@ to ``true``. If ``redshift.allow_blueshifts`` is ``false``, the range is
        columns:
          - z_spec
          - z_phot
+       labels:
+         - s
+         - p
+       label_column: z_source
+       invalid_label: none
        invalid_value: -1
+
+``label_column`` is optional. When present, ``curate`` writes the label for the
+candidate column that supplied the selected redshift. ``labels`` must have the
+same length as ``columns``; if omitted, the candidate column names are used.
+Rows with no valid redshift get ``invalid_label``, which defaults to
+``invalid``.
 
 Filter By Redshift
 ------------------
