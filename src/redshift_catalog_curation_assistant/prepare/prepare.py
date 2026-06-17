@@ -14,6 +14,7 @@ from ..hats import (
     HATS_COORDINATE_ERROR,
     hats_catalog_name,
     hats_margin_threshold,
+    hats_output_with_margin,
     hats_ra_dec_columns_required,
     hats_sort_columns,
     is_hats_input,
@@ -92,6 +93,10 @@ def _hats_catalog_name(output_dir: Path, config: dict[str, Any]) -> str:
 
 def _hats_margin_threshold(config: dict[str, Any]) -> float:
     return hats_margin_threshold(config, PrepareError)
+
+
+def _hats_output_with_margin(config: dict[str, Any]) -> bool:
+    return hats_output_with_margin(config, PrepareError)
 
 
 def _hats_sort_columns(config: dict[str, Any]) -> str | None:
@@ -212,7 +217,8 @@ def _write_manifest(
             "catalog_name": _hats_catalog_name(output_dir, config),
             "ra_column": _hats_ra_dec_columns(config)[0],
             "dec_column": _hats_ra_dec_columns(config)[1],
-            "margin_threshold": _hats_margin_threshold(config),
+            "hats_output_with_margin": _hats_output_with_margin(config),
+            "margin_threshold": _hats_margin_threshold(config) if _hats_output_with_margin(config) else None,
             "sort_columns": _hats_sort_columns(config),
         }
     (output_dir / "_redshift_curator_manifest.json").write_text(json.dumps(manifest, indent=2))

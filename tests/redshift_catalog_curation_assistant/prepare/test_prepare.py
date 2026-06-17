@@ -84,6 +84,63 @@ def test_prepare_small_csv_can_write_hats_collection(tmp_path, monkeypatch):
     assert manifest["partition_format"] == "hats"
     assert manifest["hats"]["ra_column"] == "ra"
     assert manifest["hats"]["dec_column"] == "dec"
+    assert manifest["hats"]["hats_output_with_margin"] is True
+    assert manifest["hats"]["margin_threshold"] == 5.0
+
+
+def test_prepare_small_hats_output_can_disable_margin(tmp_path, monkeypatch):
+    """Ensure users can write HATS output without a margin cache."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,10.0,-1.0,0.1\n2,11.0,-1.1,0.2\n")
+    output_dir = tmp_path / "prepared_hats"
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    prepared = prepare_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "output_format": "hats",
+            "large_file_threshold_mb": 1,
+            "hats": {
+                "catalog_name": "toy",
+                "ra_column": "ra",
+                "dec_column": "dec",
+                "hats_output_with_margin": False,
+                "margin_threshold": 5.0,
+            },
+        }
+    )
+
+    assert prepared == output_dir
+    assert (output_dir / "collection.properties").exists()
+    assert (output_dir / "toy" / "hats.properties").exists()
+    assert not list(output_dir.glob("*_arcs"))
+    manifest = json.loads((output_dir / "_redshift_curator_manifest.json").read_text())
+    assert manifest["hats"]["hats_output_with_margin"] is False
+    assert manifest["hats"]["margin_threshold"] is None
+
+
+def test_prepare_hats_rejects_zero_margin_threshold(tmp_path):
+    """Ensure margin threshold zero is rejected when HATS margins are enabled."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,10.0,-1.0,0.1\n")
+
+    with pytest.raises(PrepareError, match="margin_threshold cannot be 0"):
+        prepare_catalog(
+            {
+                "input_file": str(csv),
+                "output_dir": str(tmp_path / "prepared_hats"),
+                "output_format": "hats",
+                "hats": {
+                    "catalog_name": "toy",
+                    "ra_column": "ra",
+                    "dec_column": "dec",
+                    "margin_threshold": 0,
+                },
+            }
+        )
 
 
 def test_prepare_hats_requires_standard_coordinate_ranges(tmp_path, monkeypatch):

@@ -205,12 +205,15 @@ def test_curate_small_csv_can_write_hats_collection(tmp_path):
     assert curated == output_dir
     assert (output_dir / "collection.properties").exists()
     assert (output_dir / "toy_curated" / "hats.properties").exists()
+    assert (output_dir / "toy_curated_5arcs" / "hats.properties").exists()
     catalog = lsdb.open_catalog(output_dir)
     assert list(catalog.columns) == ["object_id", "ra", "dec", "z"]
     manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
     assert manifest["partition_format"] == "hats"
     assert manifest["hats"]["ra_column"] == "ra"
     assert manifest["hats"]["dec_column"] == "dec"
+    assert manifest["hats"]["hats_output_with_margin"] is True
+    assert manifest["hats"]["margin_threshold"] == 5.0
 
 
 def test_curate_hats_input_can_write_hats_collection(tmp_path, monkeypatch):
@@ -220,7 +223,63 @@ def test_curate_hats_input_can_write_hats_collection(tmp_path, monkeypatch):
     import redshift_catalog_curation_assistant.curate.curate as cur
 
     output_dir = tmp_path / "curated_hats"
+    margin_calls = []
     monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
+    monkeypatch.setattr(
+        cur,
+        "add_margin_to_hats_collection",
+        lambda *args, **kwargs: margin_calls.append((args, kwargs)),
+    )
+
+    with pytest.warns(UserWarning, match="did not open with a default margin"):
+        curated = curate_catalog(
+            {
+                "input_file": "tests/data/raw/elaisfbmc_collection",
+                "output_dir": str(output_dir),
+                "overwrite": True,
+                "output_format": "hats",
+                "column_selection": ["ELAIS", "RAdeg", "DEdeg", "zbest"],
+                "coordinates": {
+                    "ra_column": "RAdeg",
+                    "dec_column": "DEdeg",
+                },
+                "redshift": {
+                    "column": "zbest",
+                },
+                "transformations": [
+                    {"type": "add_constant_column", "name": "curated_by", "value": "rcca"},
+                ],
+                "hats": {
+                    "catalog_name": "elais_curated",
+                },
+            }
+        )
+
+    assert curated == output_dir
+    assert (output_dir / "collection.properties").exists()
+    assert (output_dir / "elais_curated" / "hats.properties").exists()
+    assert len(margin_calls) == 1
+    catalog = lsdb.open_catalog(output_dir / "elais_curated")
+    assert list(catalog.columns) == ["ELAIS", "RAdeg", "DEdeg", "zbest", "curated_by"]
+    assert catalog.head(1)["curated_by"].tolist() == ["rcca"]
+    manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
+    assert manifest["partition_format"] == "hats"
+    assert manifest["output_mode"] == "hats"
+    assert manifest["hats"]["hats_output_with_margin"] is True
+    assert manifest["hats"]["margin_threshold"] == 5.0
+
+
+def test_curate_hats_input_can_disable_margin_output(tmp_path, monkeypatch):
+    """Verify HATS margin output can be disabled explicitly."""
+    import redshift_catalog_curation_assistant.curate.curate as cur
+
+    output_dir = tmp_path / "curated_hats"
+    monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
+    monkeypatch.setattr(
+        cur,
+        "add_margin_to_hats_collection",
+        lambda *args, **kwargs: pytest.fail("margin generation should be skipped"),
+    )
 
     curated = curate_catalog(
         {
@@ -236,24 +295,44 @@ def test_curate_hats_input_can_write_hats_collection(tmp_path, monkeypatch):
             "redshift": {
                 "column": "zbest",
             },
-            "transformations": [
-                {"type": "add_constant_column", "name": "curated_by", "value": "rcca"},
-            ],
             "hats": {
                 "catalog_name": "elais_curated",
+                "hats_output_with_margin": False,
+                "margin_threshold": 5.0,
             },
         }
     )
 
     assert curated == output_dir
     assert (output_dir / "collection.properties").exists()
-    assert (output_dir / "elais_curated" / "hats.properties").exists()
-    catalog = lsdb.open_catalog(output_dir)
-    assert list(catalog.columns) == ["ELAIS", "RAdeg", "DEdeg", "zbest", "curated_by"]
-    assert catalog.head(1)["curated_by"].tolist() == ["rcca"]
+    assert not list(output_dir.glob("*_arcs"))
     manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
-    assert manifest["partition_format"] == "hats"
-    assert manifest["output_mode"] == "hats"
+    assert manifest["hats"]["hats_output_with_margin"] is False
+    assert manifest["hats"]["margin_threshold"] is None
+
+
+def test_curate_hats_rejects_zero_margin_threshold(tmp_path):
+    """Verify margin threshold zero is rejected when HATS margin output is enabled."""
+    with pytest.raises(CurateError, match="margin_threshold cannot be 0"):
+        curate_catalog(
+            {
+                "input_file": "tests/data/raw/elaisfbmc_collection",
+                "output_dir": str(tmp_path / "curated_hats"),
+                "overwrite": True,
+                "output_format": "hats",
+                "coordinates": {
+                    "ra_column": "RAdeg",
+                    "dec_column": "DEdeg",
+                },
+                "redshift": {
+                    "column": "zbest",
+                },
+                "hats": {
+                    "catalog_name": "elais_curated",
+                    "margin_threshold": 0,
+                },
+            }
+        )
 
 
 def test_curate_hats_input_requires_hats_output(tmp_path):
@@ -1158,6 +1237,7 @@ def test_curate_versioned_sample_configs(config_path, tmp_path, monkeypatch):
     import redshift_catalog_curation_assistant.curate.curate as cur
 
     monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
+    monkeypatch.setattr(cur, "add_margin_to_hats_collection", lambda *args, **kwargs: None)
     config = load_curate_config(Path(config_path))
     config["output_dir"] = str(tmp_path / Path(config_path).stem)
 

@@ -10,13 +10,19 @@ import yaml
 
 from ..executor import dask_client_context, dask_cluster_config
 from ..hats import (
+    add_margin_to_hats_collection,
     hats_catalog_name,
     hats_config,
     hats_margin_threshold,
+    hats_margin_threshold_was_configured,
+    hats_output_with_margin,
+    hats_primary_catalog_path,
     hats_ra_dec_columns_with_defaults,
     hats_sort_columns,
     is_hats_input,
+    open_hats_catalog_kwargs,
     run_hats_import_from_parquet,
+    warn_missing_default_hats_margin,
     write_hats_from_dataframe,
 )
 from ..io import DEFAULT_DASK_THRESHOLD_BYTES, read_table
@@ -129,6 +135,10 @@ def _hats_catalog_name(output_dir: Path, config: dict[str, Any]) -> str:
 
 def _hats_margin_threshold(config: dict[str, Any]) -> float:
     return hats_margin_threshold(config, CurateError)
+
+
+def _hats_output_with_margin(config: dict[str, Any]) -> bool:
+    return hats_output_with_margin(config, CurateError)
 
 
 def _hats_sort_columns(config: dict[str, Any]) -> str | None:
@@ -444,6 +454,7 @@ def _validate_config(config: Any) -> dict[str, Any]:
         _hats_catalog_name(output_dir, config)
         _hats_ra_dec_columns(config)
         _hats_margin_threshold(config)
+        _hats_output_with_margin(config)
         _hats_sort_columns(config)
     _generated_columns_position(config)
     _validate_transformations(config.get("transformations", []))
@@ -714,7 +725,11 @@ def _add_constant_column(df: Any, transformation: dict[str, Any]) -> tuple[Any, 
     name = transformation.get("name")
     if not isinstance(name, str) or not name.strip():
         raise CurateError("add_constant_column transformations require a non-empty name.")
-    df[name] = transformation.get("value")
+    value = transformation.get("value")
+    if isinstance(df, pd.DataFrame) and df.empty:
+        df[name] = pd.Series(dtype=pd.Series([value]).dtype)
+    else:
+        df[name] = value
     return df, [name]
 
 
@@ -1363,11 +1378,29 @@ def _finalize_hats_partition(
     return partition[final_columns]
 
 
-def _curate_hats_input(input_path: Path, output_dir: Path, config: dict[str, Any]) -> tuple[int, list[str]]:
+def _curate_hats_input(
+    input_path: Path,
+    output_dir: Path,
+    config: dict[str, Any],
+    client: Any,
+    cluster_config: dict[str, Any],
+) -> tuple[int, list[str]]:
     import lsdb
 
     required_columns = _required_input_columns(config)
-    catalog = lsdb.open_catalog(input_path, columns=required_columns)
+    open_kwargs: dict[str, Path]
+    if _hats_output_with_margin(config) and config.get("transformations"):
+        open_path, open_kwargs = hats_primary_catalog_path(input_path), {}
+    else:
+        open_path, open_kwargs = open_hats_catalog_kwargs(input_path, config)
+    catalog = lsdb.open_catalog(open_path, columns=required_columns, **open_kwargs)
+    if (
+        _hats_output_with_margin(config)
+        and not hats_margin_threshold_was_configured(config)
+        and ("margin_cache" in open_kwargs or catalog.margin is None)
+    ):
+        warn_missing_default_hats_margin(input_path)
+    should_add_margin = _hats_output_with_margin(config) and catalog.margin is None
     transformed_meta, generated_columns = _transformed_meta_from_catalog(catalog, config)
     transformed_catalog = catalog.map_partitions(
         _transform_partition,
@@ -1400,6 +1433,15 @@ def _curate_hats_input(input_path: Path, output_dir: Path, config: dict[str, Any
         progress_bar=bool(config.get("progress_bar", False)),
         create_thumbnail=bool(hats_config(config, CurateError).get("create_thumbnail", False)),
     )
+    if should_add_margin:
+        add_margin_to_hats_collection(
+            output_dir,
+            _hats_catalog_name(output_dir, config),
+            config,
+            client,
+            cluster_config=cluster_config,
+            error_cls=CurateError,
+        )
     return int(final_catalog.npartitions), final_columns
 
 
@@ -1448,7 +1490,8 @@ def _write_manifest(
             "catalog_name": _hats_catalog_name(output_dir, config),
             "ra_column": _hats_ra_dec_columns(config)[0],
             "dec_column": _hats_ra_dec_columns(config)[1],
-            "margin_threshold": _hats_margin_threshold(config),
+            "hats_output_with_margin": _hats_output_with_margin(config),
+            "margin_threshold": _hats_margin_threshold(config) if _hats_output_with_margin(config) else None,
             "sort_columns": _hats_sort_columns(config),
         }
     (output_dir / "_redshift_curator_curation_manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -1472,8 +1515,10 @@ def curate_catalog(config: dict[str, Any]) -> Path:
             raise CurateError("HATS curate input currently requires output_format: hats.")
         _prepare_output_dir(output_dir, overwrite=bool(cfg.get("overwrite", False)))
         cluster_config = dask_cluster_config(cfg)
-        with dask_client_context(cluster_config, logs_dir=output_dir / "logs"):
-            n_partitions, final_columns = _curate_hats_input(input_paths[0], output_dir, cfg)
+        with dask_client_context(cluster_config, logs_dir=output_dir / "logs") as client:
+            n_partitions, final_columns = _curate_hats_input(
+                input_paths[0], output_dir, cfg, client, cluster_config
+            )
         _write_manifest(output_dir, input_paths, "hats", n_partitions, final_columns, cfg)
         return output_dir
 
