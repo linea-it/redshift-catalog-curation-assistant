@@ -91,6 +91,7 @@ The ``hats`` block must identify the coordinate columns:
      catalog_name: my_catalog
      ra_column: ra
      dec_column: dec
+     hats_output_with_margin: true
      margin_threshold: 5.0
 
 ``hats.catalog_name``
@@ -103,7 +104,13 @@ The ``hats`` block must identify the coordinate columns:
   RA in ``[0, 360)`` and Dec in ``(-90, 90)``.
 
 ``hats.margin_threshold``
-  Margin cache threshold in arcseconds. Defaults to ``5.0``.
+  Margin cache threshold in arcseconds. Defaults to ``5.0``. When margin
+  output is enabled, this must be greater than zero.
+
+``hats.hats_output_with_margin``
+  ``true`` by default. When true, HATS output includes a default margin cache
+  using ``hats.margin_threshold``. When false, ``hats.margin_threshold`` is
+  ignored and no margin cache is generated.
 
 ``hats.sort_columns``
   Optional column name passed to ``hats_import`` for large-input sorting.
@@ -114,7 +121,7 @@ with ``lsdb.from_dataframe()``, and written with ``Catalog.write_catalog()``.
 Large inputs are first normalized to a temporary Parquet dataset using the same
 ``prepare`` path as Parquet output. Then ``hats_import`` imports that temporary
 Parquet dataset with ``file_reader: parquet``, writes the catalog plus default
-margin cache, and the temporary Parquet files are removed.
+margin cache when requested, and the temporary Parquet files are removed.
 
 ``prepare`` does not transform coordinates before writing HATS. If the source
 catalog stores coordinates as HMS/DMS, hourangle strings, radians, or any other

@@ -91,6 +91,8 @@ This persists the transformed Dask dataframe before validation and writing.
 When ``output_format: hats`` is requested for large Parquet input, ``curate``
 writes the curated Dask dataframe to temporary Parquet and imports it with
 ``hats_import``. The temporary Parquet dataset is removed after the HATS import.
+When ``hats_output_with_margin`` is enabled, the HATS import also writes a
+default margin cache using the configured or default margin threshold.
 
 For HATS input, ``curate`` always creates a Dask client, opens the catalog with
 ``lsdb.open_catalog()``, applies transformations through public LSDB

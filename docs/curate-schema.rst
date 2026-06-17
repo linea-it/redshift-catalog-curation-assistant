@@ -135,12 +135,27 @@ HATS output uses the final validated coordinate columns by default:
 
    hats:
      catalog_name: my_curated_catalog
+     hats_output_with_margin: true
      margin_threshold: 5.0
 
 Override ``hats.ra_column`` and ``hats.dec_column`` only when the HATS spatial
 index should use different final columns. Those columns must still be present
 in the curated output and already be numeric degrees in the standard ranges:
 RA in ``[0, 360)`` and Dec in ``(-90, 90)``.
+
+``hats.hats_output_with_margin`` is ``true`` by default. When enabled, curated
+HATS output includes a default margin cache. ``hats.margin_threshold`` defaults
+to ``5.0`` arcseconds and must be greater than zero while margin output is
+enabled. Set ``hats_output_with_margin: false`` to skip margin generation; in
+that case any configured ``margin_threshold`` is ignored.
+
+For HATS collection input, ``curate`` opens the collection normally when a
+default margin is declared. If no default margin is available and margin output
+is enabled, it looks for margin catalogs in the collection. Without an explicit
+``margin_threshold``, the smallest available margin threshold is used. With an
+explicit threshold, only an exact matching margin catalog is reused. If no
+matching input margin can be used, ``curate`` writes the curated catalog first
+and then adds a new default margin cache to the output collection.
 
 Redshift Policy
 ---------------
