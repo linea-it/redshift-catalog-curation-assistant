@@ -1,6 +1,8 @@
 import json
+import logging
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -36,6 +38,8 @@ from ..prepare.prepare import (
     _target_partition_size_bytes,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 GENERATED_COLUMNS_POSITION = {"first", "last"}
 SUPPORTED_TRANSFORMATION_TYPES = {
     "add_constant_column",
@@ -53,7 +57,7 @@ DEC_MAX_DEG = 90.0
 REDSHIFT_MIN_WITH_BLUESHIFTS = -0.1
 REDSHIFT_MIN_WITHOUT_BLUESHIFTS = 0.0
 REDSHIFT_MAX = 20.0
-REDSHIFT_INVALID_POLICIES = {"fail", "flag"}
+REDSHIFT_INVALID_POLICIES = {"fail", "flag", "keep"}
 DEFAULT_INVALID_REDSHIFT_VALUE = -1.0
 REDSHIFT_FILTER_OPERATORS = {"<", "<=", ">", ">=", "==", "!="}
 OUTPUT_FORMATS = {"parquet", "hats"}
@@ -213,7 +217,7 @@ def _redshift_config(config: dict[str, Any]) -> tuple[str, str, float, bool]:
         raise CurateError("redshift.column must be a non-empty string.")
     invalid_policy = str(redshift.get("invalid_policy", "fail")).lower()
     if invalid_policy not in REDSHIFT_INVALID_POLICIES:
-        raise CurateError("redshift.invalid_policy must be one of: fail, flag.")
+        raise CurateError("redshift.invalid_policy must be one of: fail, flag, keep.")
     invalid_value = redshift.get("invalid_value", DEFAULT_INVALID_REDSHIFT_VALUE)
     if not isinstance(invalid_value, int | float) or isinstance(invalid_value, bool):
         raise CurateError("redshift.invalid_value must be numeric.")
@@ -999,9 +1003,10 @@ def _validate_redshift(df: Any, config: dict[str, Any]) -> tuple[Any, str]:
             f"Redshift column '{column}' is outside the required range ({redshift_min}, {redshift_max}). "
             f"Observed range: [{min_value}, {max_value}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
-            "or set redshift.invalid_policy: flag to map invalid values to -1."
+            "set redshift.invalid_policy to flag to map invalid values to -1, "
+            "or set it to keep to preserve the original values."
         )
-    if invalid_count:
+    if invalid_count and invalid_policy == "flag":
         df = _flag_invalid_redshifts(df, column, invalid_value, allow_blueshifts)
     return df, column
 
@@ -1096,9 +1101,10 @@ def _validate_standard_columns(df: Any, config: dict[str, Any]) -> tuple[Any, st
             f"({redshift_min}, {redshift_max}). "
             f"Observed range: [{z_min}, {z_max}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
-            "or set redshift.invalid_policy: flag to map invalid values to -1."
+            "set redshift.invalid_policy to flag to map invalid values to -1, "
+            "or set it to keep to preserve the original values."
         )
-    if invalid_redshift_count:
+    if invalid_redshift_count and invalid_policy == "flag":
         df = _flag_invalid_redshifts(df, redshift_column, invalid_value, allow_blueshifts)
     return df, ra_column, dec_column, redshift_column
 
@@ -1235,11 +1241,14 @@ def _write_hats_from_dask_dataframe(
         tempfile.mkdtemp(prefix=f".{output_dir.name}-parquet-", dir=str(output_dir.parent))
     )
     try:
+        LOGGER.info("Writing temporary partitioned Parquet dataset for HATS import")
         n_partitions = _write_partitioned_parquet(df, parquet_output_dir, prefix, output_mode)
+        LOGGER.info("Converting partitioned Parquet dataset to HATS")
         _run_hats_import_from_parquet(parquet_output_dir, output_dir, config, client, cluster_config)
         return n_partitions
     finally:
         if parquet_output_dir.exists():
+            LOGGER.debug("Removing temporary Parquet dataset: %s", parquet_output_dir)
             shutil.rmtree(parquet_output_dir)
 
 
@@ -1360,7 +1369,8 @@ def _validate_standard_hats_catalog(catalog: Any, config: dict[str, Any]) -> tup
             f"({redshift_min}, {redshift_max}). "
             f"Observed range: [{z_min}, {z_max}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
-            "or set redshift.invalid_policy: flag to map invalid values to -1."
+            "set redshift.invalid_policy to flag to map invalid values to -1, "
+            "or set it to keep to preserve the original values."
         )
     return ra_column, dec_column, redshift_column, allow_blueshifts
 
@@ -1372,8 +1382,10 @@ def _finalize_hats_partition(
     allow_blueshifts: bool,
     final_columns: list[str],
 ) -> pd.DataFrame:
-    _column, _invalid_policy, invalid_value, _configured_allow_blueshifts = _redshift_config(config)
-    partition = _flag_invalid_redshifts(partition.copy(), redshift_column, invalid_value, allow_blueshifts)
+    _column, invalid_policy, invalid_value, _configured_allow_blueshifts = _redshift_config(config)
+    partition = partition.copy()
+    if invalid_policy == "flag":
+        partition = _flag_invalid_redshifts(partition, redshift_column, invalid_value, allow_blueshifts)
     partition = _apply_redshift_filters(partition, config, redshift_column)
     return partition[final_columns]
 
@@ -1393,6 +1405,7 @@ def _curate_hats_input(
         open_path, open_kwargs = hats_primary_catalog_path(input_path), {}
     else:
         open_path, open_kwargs = open_hats_catalog_kwargs(input_path, config)
+    LOGGER.info("Opening HATS input catalog: %s", open_path)
     catalog = lsdb.open_catalog(open_path, columns=required_columns, **open_kwargs)
     if (
         _hats_output_with_margin(config)
@@ -1401,6 +1414,9 @@ def _curate_hats_input(
     ):
         warn_missing_default_hats_margin(input_path)
     should_add_margin = _hats_output_with_margin(config) and catalog.margin is None
+    transformations = config.get("transformations") or []
+    if transformations:
+        LOGGER.info("Configuring %d transformation(s) on HATS partitions", len(transformations))
     transformed_meta, generated_columns = _transformed_meta_from_catalog(catalog, config)
     transformed_catalog = catalog.map_partitions(
         _transform_partition,
@@ -1408,6 +1424,7 @@ def _curate_hats_input(
         meta=transformed_meta,
     )
 
+    LOGGER.info("Validating RA, Dec, and redshift columns")
     ra_column, dec_column, redshift_column, allow_blueshifts = _validate_standard_hats_catalog(
         transformed_catalog, config
     )
@@ -1424,6 +1441,7 @@ def _curate_hats_input(
         final_columns,
         meta=final_meta,
     )
+    LOGGER.info("Writing curated HATS catalog")
     final_catalog.write_catalog(
         output_dir,
         catalog_name=_hats_catalog_name(output_dir, config),
@@ -1434,6 +1452,7 @@ def _curate_hats_input(
         create_thumbnail=bool(hats_config(config, CurateError).get("create_thumbnail", False)),
     )
     if should_add_margin:
+        LOGGER.info("Creating HATS margin cache")
         add_margin_to_hats_collection(
             output_dir,
             _hats_catalog_name(output_dir, config),
@@ -1499,14 +1518,23 @@ def _write_manifest(
 
 def curate_catalog(config: dict[str, Any]) -> Path:
     """Curate a local catalog and write a Parquet dataset or HATS collection."""
+    started_at = time.monotonic()
     cfg = _validate_config(config)
     input_paths = _input_paths(cfg)
     output_dir = Path(cfg["output_dir"])
     threshold_bytes = _large_file_threshold_bytes(cfg)
-    is_small_input = _total_input_size(input_paths) < threshold_bytes
+    input_size = _total_input_size(input_paths)
+    is_small_input = input_size < threshold_bytes
     prefix = str(cfg.get("part_prefix") or output_dir.name)
     output_format = _output_format(cfg)
     hats_inputs = [path for path in input_paths if is_hats_input(path)]
+    LOGGER.info(
+        "Starting curate: inputs=%d, size=%.2f GB, output_format=%s, output=%s",
+        len(input_paths),
+        input_size / (1024**3),
+        output_format,
+        output_dir,
+    )
 
     if hats_inputs:
         if len(input_paths) != 1:
@@ -1515,24 +1543,40 @@ def curate_catalog(config: dict[str, Any]) -> Path:
             raise CurateError("HATS curate input currently requires output_format: hats.")
         _prepare_output_dir(output_dir, overwrite=bool(cfg.get("overwrite", False)))
         cluster_config = dask_cluster_config(cfg)
+        LOGGER.info("Setting up Dask cluster for HATS curation")
         with dask_client_context(cluster_config, logs_dir=output_dir / "logs") as client:
             n_partitions, final_columns = _curate_hats_input(
                 input_paths[0], output_dir, cfg, client, cluster_config
             )
         _write_manifest(output_dir, input_paths, "hats", n_partitions, final_columns, cfg)
+        LOGGER.info("Curate completed in %.1f seconds", time.monotonic() - started_at)
         return output_dir
 
+    LOGGER.info("Reading input catalog")
     df, is_dask = _read_input(input_paths, cfg, threshold_bytes)
+    if is_dask:
+        LOGGER.info("Input opened with Dask using %d partition(s)", int(df.npartitions))
+    else:
+        LOGGER.info("Input loaded in memory with %d row(s)", len(df))
+    transformations = cfg.get("transformations") or []
+    if transformations:
+        LOGGER.info("Applying %d configured transformation(s)", len(transformations))
     df, generated_columns = _apply_transformations(df, cfg)
 
     output_mode = _resolve_output_mode(cfg, is_small_input=is_small_input)
+    LOGGER.info("Resolved output mode: %s", output_mode)
     _prepare_output_dir(output_dir, overwrite=bool(cfg.get("overwrite", False)))
     if is_dask:
         cluster_config = dask_cluster_config(cfg)
+        LOGGER.info("Setting up Dask cluster for distributed curation")
         with dask_client_context(cluster_config, logs_dir=output_dir / "logs") as client:
             if bool(cfg.get("persist_after_transformations", False)):
+                LOGGER.info("Persisting transformed dataset")
                 df = df.persist()
+            LOGGER.info("Validating RA, Dec, and redshift columns")
             df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
+            if _redshift_filters(cfg):
+                LOGGER.info("Applying %d redshift filter(s)", len(_redshift_filters(cfg)))
             df = _apply_redshift_filters(df, cfg, redshift_column)
             final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
             df = df[final_columns]
@@ -1542,21 +1586,31 @@ def curate_catalog(config: dict[str, Any]) -> Path:
                     df, output_dir, prefix, output_mode, cfg, client, cluster_config
                 )
             else:
+                LOGGER.info("Writing partitioned Parquet dataset")
                 n_partitions = _write_partitioned_parquet(df, output_dir, prefix, output_mode)
     else:
+        LOGGER.info("Validating RA, Dec, and redshift columns")
         df, ra_column, dec_column, redshift_column = _validate_standard_columns(df, cfg)
+        if _redshift_filters(cfg):
+            LOGGER.info("Applying %d redshift filter(s)", len(_redshift_filters(cfg)))
         df = _apply_redshift_filters(df, cfg, redshift_column)
         final_columns = _final_columns(df, cfg, generated_columns, ra_column, dec_column, redshift_column)
         df = df[final_columns]
     if output_format == "hats" and not is_dask:
         _ensure_columns(df, list(_hats_ra_dec_columns(cfg)), "HATS output")
+        LOGGER.info("Converting in-memory catalog to HATS")
         n_partitions = _write_hats_from_dataframe(df, output_dir, cfg)
     elif output_mode == "single" and not is_dask:
+        LOGGER.info("Writing single Parquet file")
         n_partitions = _write_single_parquet(df, output_dir, prefix)
     elif not is_dask:
         cluster_config = dask_cluster_config(cfg)
+        LOGGER.info("Setting up Dask cluster for partitioned Parquet output")
         with dask_client_context(cluster_config, logs_dir=output_dir / "logs"):
+            LOGGER.info("Writing partitioned Parquet dataset")
             n_partitions = _write_partitioned_parquet(df, output_dir, prefix, output_mode)
 
+    LOGGER.info("Writing curation manifest")
     _write_manifest(output_dir, input_paths, output_mode, n_partitions, final_columns, cfg)
+    LOGGER.info("Curate completed in %.1f seconds", time.monotonic() - started_at)
     return output_dir

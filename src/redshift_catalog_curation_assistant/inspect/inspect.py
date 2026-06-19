@@ -1,6 +1,8 @@
 import json
+import logging
 import math
 import re
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ import yaml
 
 from ..hats import is_hats_input
 from ..io import DEFAULT_DASK_THRESHOLD_BYTES
+
+LOGGER = logging.getLogger(__name__)
 
 PARQUET_SUFFIXES = {".parquet", ".pq"}
 FITS_SUFFIXES = {".fits", ".fit", ".fts"}
@@ -1381,37 +1385,50 @@ def _write_report(outdir: Path, survey: str, input_path: Path, report: dict[str,
 
 def run_inspect_config(config: dict[str, Any]) -> Path:
     """Run catalog inspection from a loaded config and write reports."""
+    started_at = time.monotonic()
     cfg = _validate_inspect_config(config)
     input_path = Path(cfg["input_file"])
     survey = cfg.get("survey_name", input_path.stem)
     outdir = Path(cfg["output_dir"]) if cfg.get("output_dir") is not None else Path("reports") / survey
+    LOGGER.info("Starting inspect: input=%s, survey=%s, output=%s", input_path, survey, outdir)
 
     if is_hats_input(input_path):
         from ..executor import dask_client_context, dask_cluster_config
 
         cluster_config = dask_cluster_config(cfg)
+        LOGGER.info("Detected HATS input; setting up Dask cluster")
         with dask_client_context(cluster_config, logs_dir=_dask_logs_dir(cluster_config, outdir)):
+            LOGGER.info("Computing HATS catalog inspection statistics")
             report = _build_hats_report(input_path, survey, cfg)
         outdir.mkdir(parents=True, exist_ok=True)
+        LOGGER.info("Writing inspection reports")
         _write_report(outdir, survey, input_path, report)
+        LOGGER.info("Inspect completed in %.1f seconds", time.monotonic() - started_at)
         return outdir
 
     if _is_parquet_input(input_path):
+        LOGGER.info("Detected Parquet input; computing metadata and inspection statistics")
         report = _build_parquet_report(input_path, survey, cfg)
         outdir.mkdir(parents=True, exist_ok=True)
+        LOGGER.info("Writing inspection reports")
         _write_report(outdir, survey, input_path, report)
+        LOGGER.info("Inspect completed in %.1f seconds", time.monotonic() - started_at)
         return outdir
 
     _check_raw_input_policy(input_path, cfg)
 
     if _is_fits_input(input_path):
+        LOGGER.info("Detected FITS input; computing inspection statistics")
         report = _build_fits_report(input_path, survey, cfg)
         outdir.mkdir(parents=True, exist_ok=True)
+        LOGGER.info("Writing inspection reports")
         _write_report(outdir, survey, input_path, report)
+        LOGGER.info("Inspect completed in %.1f seconds", time.monotonic() - started_at)
         return outdir
 
     from ..io import read_table
 
+    LOGGER.info("Reading tabular input")
     df = read_table(
         input_path,
         fits_hdu=cfg.get("fits_hdu", 1),
@@ -1423,13 +1440,18 @@ def run_inspect_config(config: dict[str, Any]) -> Path:
         from ..executor import dask_client_context, dask_cluster_config
 
         cluster_config = dask_cluster_config(cfg)
+        LOGGER.info("Input opened with Dask; setting up cluster for inspection")
         with dask_client_context(cluster_config, logs_dir=_dask_logs_dir(cluster_config, outdir)):
+            LOGGER.info("Computing catalog inspection statistics")
             report = _build_report(input_path, survey, df, cfg)
     else:
+        LOGGER.info("Computing in-memory catalog inspection statistics")
         report = _build_report(input_path, survey, df, cfg)
 
     outdir.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Writing inspection reports")
     _write_report(outdir, survey, input_path, report)
+    LOGGER.info("Inspect completed in %.1f seconds", time.monotonic() - started_at)
     return outdir
 
 

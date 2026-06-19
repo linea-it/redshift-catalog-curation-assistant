@@ -19,6 +19,7 @@ def test_cli_help():
     assert "qa" in result.output
     assert "validate-flags" in result.output
     assert "run" in result.output
+    assert "--log-level" in result.output
 
 
 def test_inspect_help():
@@ -76,6 +77,10 @@ def test_prepare_path_command(tmp_path):
 
     assert result.exit_code == 0
     assert "Prepared catalog written to" in result.output
+    assert "Starting prepare" in result.output
+    assert "Reading input and writing single Parquet file" in result.output
+    assert "Writing preparation manifest" in result.output
+    assert "Prepare completed" in result.output
     assert sorted(output_dir.glob("*.parquet"))
     assert (output_dir / "_redshift_curator_manifest.json").exists()
 
@@ -101,6 +106,11 @@ def test_inspect_path_command(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "reports/PATH_SAMPLE" in result.output
+    assert "Starting inspect" in result.output
+    assert "Reading tabular input" in result.output
+    assert "Computing in-memory catalog inspection statistics" in result.output
+    assert "Writing inspection reports" in result.output
+    assert "Inspect completed" in result.output
     assert (tmp_path / "reports" / "PATH_SAMPLE" / "inspect_report.json").exists()
 
 
@@ -455,7 +465,34 @@ def test_curate_command(tmp_path):
 
     assert result.exit_code == 0
     assert "Curated catalog written to" in result.output
+    assert "Starting curate" in result.output
+    assert "Reading input catalog" in result.output
+    assert "Validating RA, Dec, and redshift columns" in result.output
+    assert "Writing single Parquet file" in result.output
+    assert "Curate completed" in result.output
     assert sorted(output_dir.glob("*.parquet"))
+
+
+def test_curate_command_can_suppress_info_logs(tmp_path):
+    """Ensure the global log-level option controls terminal stage messages."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"input_file: {csv}\n"
+        f"output_dir: {tmp_path / 'curated'}\n"
+        "coordinates:\n"
+        "  ra_column: ra\n"
+        "  dec_column: dec\n"
+        "redshift:\n"
+        "  column: z\n"
+    )
+
+    result = CliRunner().invoke(cli, ["--log-level", "WARNING", "curate", str(cfg)])
+
+    assert result.exit_code == 0
+    assert "Starting curate" not in result.output
+    assert "Curated catalog written to" in result.output
 
 
 @pytest.mark.parametrize("command", ["qa", "validate-flags", "run"])

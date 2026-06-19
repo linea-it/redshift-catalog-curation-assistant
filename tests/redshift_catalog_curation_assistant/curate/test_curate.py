@@ -41,6 +41,7 @@ def minimal_curate_config() -> dict:
         ({"column_selection": ["ra", 1]}, "column_selection must be a list"),
         ({"coordinates": "ra,dec"}, "coordinates.ra_column and coordinates.dec_column"),
         ({"redshift": "z"}, "redshift.column"),
+        ({"redshift": {"column": "z", "invalid_policy": "ignore"}}, "redshift.invalid_policy"),
         ({"redshift": {"column": "z", "allow_blueshifts": "yes"}}, "redshift.allow_blueshifts"),
         ({"redshift": {"column": "z", "filters": "z < 9"}}, "redshift.filters must be a list"),
         ({"redshift": {"column": "z", "filters": [{"op": "between", "value": 9}]}}, "redshift.filters"),
@@ -267,6 +268,44 @@ def test_curate_hats_input_can_write_hats_collection(tmp_path, monkeypatch):
     assert manifest["output_mode"] == "hats"
     assert manifest["hats"]["hats_output_with_margin"] is True
     assert manifest["hats"]["margin_threshold"] == 5.0
+
+
+def test_curate_hats_input_can_keep_invalid_redshifts(tmp_path, monkeypatch):
+    """Verify keep preserves invalid redshifts through the HATS partition path."""
+    import lsdb
+
+    import redshift_catalog_curation_assistant.curate.curate as cur
+
+    output_dir = tmp_path / "curated_hats"
+    monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
+
+    curate_catalog(
+        {
+            "input_file": "tests/data/raw/elaisfbmc_collection",
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "output_format": "hats",
+            "column_selection": ["ELAIS", "RAdeg", "DEdeg", "z_original"],
+            "coordinates": {
+                "ra_column": "RAdeg",
+                "dec_column": "DEdeg",
+            },
+            "redshift": {
+                "column": "z_original",
+                "invalid_policy": "keep",
+            },
+            "transformations": [
+                {"type": "add_constant_column", "name": "z_original", "value": 99.0},
+            ],
+            "hats": {
+                "catalog_name": "elais_curated",
+                "hats_output_with_margin": False,
+            },
+        }
+    )
+
+    catalog = lsdb.open_catalog(output_dir / "elais_curated")
+    assert (catalog.compute()["z_original"] == 99.0).all()
 
 
 def test_curate_hats_input_can_disable_margin_output(tmp_path, monkeypatch):
@@ -762,6 +801,32 @@ def test_curate_can_flag_invalid_redshifts(tmp_path):
     assert df["z"].tolist() == [0.1, -1.0, -1.0]
 
 
+def test_curate_can_keep_invalid_redshifts(tmp_path):
+    """Verify users can preserve original redshifts outside the standard range."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n11.0,-1.1,99.0\n12.0,-1.2,-0.2\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+                "invalid_policy": "keep",
+            },
+        }
+    )
+
+    df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
+    assert df["z"].tolist() == [0.1, 99.0, -0.2]
+
+
 def test_curate_allows_small_blueshifts_by_default(tmp_path):
     """Verify the default redshift range preserves the existing blueshift allowance."""
     csv = tmp_path / "sample.csv"
@@ -897,9 +962,7 @@ def test_curate_redshift_filters_exclude_flagged_invalids(tmp_path):
 def test_curate_coalesces_redshift_columns_by_validity(tmp_path):
     """Verify z_final can be generated from prioritized redshift candidates."""
     csv = tmp_path / "sample.csv"
-    csv.write_text(
-        "ra,dec,z_spec,z_phot\n" "10.0,-1.0,0.10,0.20\n" "11.0,-1.1,99.00,0.30\n" "12.0,-1.2,-0.2,99.00\n"
-    )
+    csv.write_text("ra,dec,z_spec,z_phot\n10.0,-1.0,0.10,0.20\n11.0,-1.1,99.00,0.30\n12.0,-1.2,-0.2,99.00\n")
     output_dir = tmp_path / "curated"
 
     curate_catalog(
@@ -933,9 +996,7 @@ def test_curate_coalesces_redshift_columns_by_validity(tmp_path):
 def test_curate_coalesce_redshift_writes_source_labels(tmp_path):
     """Verify coalesce_redshift can record which candidate supplied the final redshift."""
     csv = tmp_path / "sample.csv"
-    csv.write_text(
-        "ra,dec,z_spec,z_phot\n" "10.0,-1.0,0.10,0.20\n" "11.0,-1.1,99.00,0.30\n" "12.0,-1.2,-0.2,99.00\n"
-    )
+    csv.write_text("ra,dec,z_spec,z_phot\n10.0,-1.0,0.10,0.20\n11.0,-1.1,99.00,0.30\n12.0,-1.2,-0.2,99.00\n")
     output_dir = tmp_path / "curated"
 
     curate_catalog(
@@ -1077,6 +1138,42 @@ def test_curate_multi_parquet_large_input_writes_partitioned_output(tmp_path, mo
     assert sorted(output_dir.glob("*.parquet"))
     manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
     assert manifest["output_mode"] == "partitioned"
+
+
+def test_curate_large_parquet_can_keep_invalid_redshifts(tmp_path, monkeypatch):
+    """Verify keep preserves invalid redshifts through the Dask path."""
+    import redshift_catalog_curation_assistant.curate.curate as cur
+
+    parquet_input = tmp_path / "input.parquet"
+    pd.DataFrame(
+        {
+            "ra": [10.0, 11.0],
+            "dec": [-1.0, -1.1],
+            "z": [0.1, 99.0],
+        }
+    ).to_parquet(parquet_input)
+    output_dir = tmp_path / "curated"
+    monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
+
+    curate_catalog(
+        {
+            "input_file": str(parquet_input),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "large_file_threshold_mb": 0,
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+                "invalid_policy": "keep",
+            },
+        }
+    )
+
+    df = pd.read_parquet(output_dir).sort_values("ra")
+    assert df["z"].tolist() == [0.1, 99.0]
 
 
 def test_curate_large_parquet_can_write_hats_via_intermediate_parquet(tmp_path, monkeypatch):
