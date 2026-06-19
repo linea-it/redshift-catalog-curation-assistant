@@ -1,6 +1,8 @@
 import json
+import logging
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,8 @@ from ..hats import (
     write_hats_from_dataframe,
 )
 from ..io import DEFAULT_DASK_THRESHOLD_BYTES, read_table
+
+LOGGER = logging.getLogger(__name__)
 
 COMPRESSED_SUFFIXES = {".gz", ".bz2", ".xz", ".zip"}
 HEADERLESS_SUFFIXES = {".dat", ".idz"}
@@ -524,6 +528,7 @@ def _dask_logs_dir(cluster_config: dict[str, Any], output_dir: Path) -> Path | N
 
 def prepare_catalog(config: dict[str, Any]) -> Path:
     """Prepare catalog input as a partitioned Parquet or HATS dataset."""
+    started_at = time.monotonic()
     input_paths = _as_paths(config.get("input_files") or [config["input_file"]])
     output_dir = Path(config["output_dir"])
     overwrite = bool(config.get("overwrite", False))
@@ -531,6 +536,14 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
     chunk_size = int(config.get("chunk_size_rows", DEFAULT_CHUNK_SIZE_ROWS))
     prefix = str(config.get("part_prefix") or input_paths[0].stem)
     output_format = _output_format(config)
+    input_size = _total_input_size(input_paths)
+    LOGGER.info(
+        "Starting prepare: inputs=%d, size=%.2f GB, output_format=%s, output=%s",
+        len(input_paths),
+        input_size / (1024**3),
+        output_format,
+        output_dir,
+    )
 
     if output_format == "hats":
         _hats_ra_dec_columns(config)
@@ -552,17 +565,23 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         if not any(input_paths[0].glob("*.parquet")) and not (input_paths[0] / "_metadata").exists():
             raise PrepareError(f"Unsupported directory input: {input_paths[0]}. Expected a Parquet dataset.")
         if output_format == "parquet":
+            LOGGER.info("Input is already a Parquet dataset; no preparation is required")
+            LOGGER.info("Prepare completed in %.1f seconds", time.monotonic() - started_at)
             return input_paths[0]
         input_format = "parquet"
         _prepare_output_dir(output_dir, overwrite=overwrite)
         cluster_config = dask_cluster_config(config)
+        LOGGER.info("Setting up Dask cluster for Parquet-to-HATS conversion")
         with dask_client_context(
             cluster_config, logs_dir=_dask_logs_dir(cluster_config, output_dir)
         ) as client:
+            LOGGER.info("Validating HATS coordinate columns")
             _validate_hats_coordinate_columns(
                 _parquet_coordinate_dask_dataframe(input_paths[0], config), config
             )
+            LOGGER.info("Converting Parquet dataset to HATS")
             _run_hats_import_from_parquet(input_paths[0], output_dir, config, client, cluster_config)
+        LOGGER.info("Writing preparation manifest")
         _write_manifest(
             output_dir,
             input_paths,
@@ -571,6 +590,7 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
             n_partitions=0,
             output_mode="hats",
         )
+        LOGGER.info("Prepare completed in %.1f seconds", time.monotonic() - started_at)
         return output_dir
 
     suffixes = {_data_suffix(path) for path in input_paths}
@@ -588,13 +608,17 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         is_single_small_file=is_single_small_file,
         is_multi_file=len(input_paths) > 1,
     )
+    LOGGER.info("Detected input format=%s; resolved output mode=%s", input_format, output_mode)
 
     _prepare_output_dir(output_dir, overwrite=overwrite)
 
     if output_format == "hats" and is_small_input:
         cluster_config = dask_cluster_config(config)
+        LOGGER.info("Setting up Dask cluster for in-memory HATS output")
         with dask_client_context(cluster_config, logs_dir=_dask_logs_dir(cluster_config, output_dir)):
+            LOGGER.info("Reading input and writing HATS catalog")
             n_partitions = _write_small_hats_inputs(input_paths, suffix, output_dir, config)
+        LOGGER.info("Writing preparation manifest")
         _write_manifest(
             output_dir,
             input_paths,
@@ -603,10 +627,13 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
             n_partitions=n_partitions,
             output_mode="hats",
         )
+        LOGGER.info("Prepare completed in %.1f seconds", time.monotonic() - started_at)
         return output_dir
 
     if is_single_small_file and output_mode == "single" and output_format == "parquet":
+        LOGGER.info("Reading input and writing single Parquet file")
         n_partitions = _write_small_input(input_paths[0], output_dir, config)
+        LOGGER.info("Writing preparation manifest")
         _write_manifest(
             output_dir,
             input_paths,
@@ -615,6 +642,7 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
             n_partitions=n_partitions,
             output_mode=output_mode,
         )
+        LOGGER.info("Prepare completed in %.1f seconds", time.monotonic() - started_at)
         return output_dir
 
     parquet_output_dir = output_dir
@@ -624,6 +652,7 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         )
 
     if suffix in FITS_SUFFIXES:
+        LOGGER.info("Building partitioned Dask dataframe from FITS input")
         df, n_partitions = _fits_paths_to_dask_dataframe(
             input_paths,
             int(config.get("fits_hdu", 1)),
@@ -632,6 +661,7 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         )
         write_schema = None
     else:
+        LOGGER.info("Opening tabular input as a Dask dataframe")
         df, input_format = _tabular_to_dask_dataframe(input_paths, config)
         n_partitions = int(df.npartitions)
         write_schema = _parquet_arrow_schema(input_paths[0]) if suffix in PARQUET_SUFFIXES else None
@@ -639,9 +669,12 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
     cluster_config = dask_cluster_config(config)
     logs_dir = _dask_logs_dir(cluster_config, output_dir)
     try:
+        LOGGER.info("Setting up Dask cluster for distributed preparation")
         with dask_client_context(cluster_config, logs_dir=logs_dir) as client:
             if output_format == "hats":
+                LOGGER.info("Validating HATS coordinate columns")
                 _validate_hats_coordinate_columns(df, config)
+            LOGGER.info("Writing partitioned Parquet dataset")
             n_written = _write_dask_parquet(
                 df,
                 parquet_output_dir,
@@ -651,11 +684,14 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
                 schema=write_schema,
             )
             if output_format == "hats":
+                LOGGER.info("Converting partitioned Parquet dataset to HATS")
                 _run_hats_import_from_parquet(parquet_output_dir, output_dir, config, client, cluster_config)
     finally:
         if output_format == "hats" and parquet_output_dir.exists():
+            LOGGER.debug("Removing temporary Parquet dataset: %s", parquet_output_dir)
             shutil.rmtree(parquet_output_dir)
 
+    LOGGER.info("Writing preparation manifest")
     _write_manifest(
         output_dir,
         input_paths,
@@ -664,4 +700,5 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         n_partitions=n_written or n_partitions,
         output_mode="hats" if output_format == "hats" else output_mode,
     )
+    LOGGER.info("Prepare completed in %.1f seconds", time.monotonic() - started_at)
     return output_dir

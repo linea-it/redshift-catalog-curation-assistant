@@ -25,6 +25,22 @@ default local cluster is:
 
 This default favors one larger local worker over several small workers.
 
+Terminal Logs
+-------------
+
+The ``inspect``, ``prepare``, and ``curate`` commands show high-level processing
+stages at ``INFO`` level by default, including input loading, Dask cluster
+setup, statistics or validation, HATS conversion, output writing, and
+completion. Change the verbosity with the global option placed before the
+command:
+
+.. code-block:: console
+
+   redshift-curator --log-level WARNING curate config.yaml
+   redshift-curator --log-level DEBUG curate config.yaml
+
+SLURM worker stdout and stderr are also written under ``OUTPUT_DIR/logs``.
+
 Prepare
 -------
 

@@ -8,11 +8,20 @@ from .. import curate as rc_curate
 from .. import fits as rc_fits
 from .. import inspect as rc_inspect
 from .. import prepare as rc_prepare
+from ..logging_utils import configure_logging
 
 
 @click.group()
-def cli():
+@click.option(
+    "--log-level",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
+    default="INFO",
+    show_default=True,
+    help="Terminal logging verbosity.",
+)
+def cli(log_level):
     """Redshift Catalog Curation Assistant CLI."""
+    configure_logging(log_level.upper())
 
 
 @cli.command()

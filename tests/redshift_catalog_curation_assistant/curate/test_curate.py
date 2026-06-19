@@ -962,9 +962,7 @@ def test_curate_redshift_filters_exclude_flagged_invalids(tmp_path):
 def test_curate_coalesces_redshift_columns_by_validity(tmp_path):
     """Verify z_final can be generated from prioritized redshift candidates."""
     csv = tmp_path / "sample.csv"
-    csv.write_text(
-        "ra,dec,z_spec,z_phot\n" "10.0,-1.0,0.10,0.20\n" "11.0,-1.1,99.00,0.30\n" "12.0,-1.2,-0.2,99.00\n"
-    )
+    csv.write_text("ra,dec,z_spec,z_phot\n10.0,-1.0,0.10,0.20\n11.0,-1.1,99.00,0.30\n12.0,-1.2,-0.2,99.00\n")
     output_dir = tmp_path / "curated"
 
     curate_catalog(
@@ -998,9 +996,7 @@ def test_curate_coalesces_redshift_columns_by_validity(tmp_path):
 def test_curate_coalesce_redshift_writes_source_labels(tmp_path):
     """Verify coalesce_redshift can record which candidate supplied the final redshift."""
     csv = tmp_path / "sample.csv"
-    csv.write_text(
-        "ra,dec,z_spec,z_phot\n" "10.0,-1.0,0.10,0.20\n" "11.0,-1.1,99.00,0.30\n" "12.0,-1.2,-0.2,99.00\n"
-    )
+    csv.write_text("ra,dec,z_spec,z_phot\n10.0,-1.0,0.10,0.20\n11.0,-1.1,99.00,0.30\n12.0,-1.2,-0.2,99.00\n")
     output_dir = tmp_path / "curated"
 
     curate_catalog(

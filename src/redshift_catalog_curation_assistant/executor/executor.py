@@ -92,8 +92,9 @@ def create_dask_cluster(cluster_config: dict[str, Any], logs_dir: Path | None = 
     if executor_name == "local":
         from dask.distributed import LocalCluster
 
-        LOGGER.info("LocalCluster started with args=%s", args)
-        return LocalCluster(**args)
+        cluster = LocalCluster(**args)
+        LOGGER.info("Local Dask cluster started with args=%s", args)
+        return cluster
 
     if executor_name == "slurm":
         try:
@@ -136,7 +137,7 @@ def create_dask_cluster(cluster_config: dict[str, Any], logs_dir: Path | None = 
         )
 
         cluster = SLURMCluster(n_workers=n_workers_init, **instance_cfg)
-        LOGGER.info("SLURMCluster started with instance args=%s", instance_cfg)
+        LOGGER.info("SLURM Dask cluster submitted with instance args=%s", instance_cfg)
 
         if max_jobs > 0:
             cluster.adapt(minimum_jobs=min_jobs, maximum_jobs=max_jobs)
@@ -159,8 +160,10 @@ def dask_client_context(cluster_config: dict[str, Any], logs_dir: Path | None = 
 
     cluster = create_dask_cluster(cluster_config, logs_dir=logs_dir)
     client = Client(cluster)
+    LOGGER.info("Dask client connected; dashboard=%s", client.dashboard_link)
     try:
         yield client
     finally:
+        LOGGER.info("Closing Dask client and cluster")
         client.close()
         cluster.close()
