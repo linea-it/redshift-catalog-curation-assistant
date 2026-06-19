@@ -53,7 +53,7 @@ DEC_MAX_DEG = 90.0
 REDSHIFT_MIN_WITH_BLUESHIFTS = -0.1
 REDSHIFT_MIN_WITHOUT_BLUESHIFTS = 0.0
 REDSHIFT_MAX = 20.0
-REDSHIFT_INVALID_POLICIES = {"fail", "flag"}
+REDSHIFT_INVALID_POLICIES = {"fail", "flag", "keep"}
 DEFAULT_INVALID_REDSHIFT_VALUE = -1.0
 REDSHIFT_FILTER_OPERATORS = {"<", "<=", ">", ">=", "==", "!="}
 OUTPUT_FORMATS = {"parquet", "hats"}
@@ -213,7 +213,7 @@ def _redshift_config(config: dict[str, Any]) -> tuple[str, str, float, bool]:
         raise CurateError("redshift.column must be a non-empty string.")
     invalid_policy = str(redshift.get("invalid_policy", "fail")).lower()
     if invalid_policy not in REDSHIFT_INVALID_POLICIES:
-        raise CurateError("redshift.invalid_policy must be one of: fail, flag.")
+        raise CurateError("redshift.invalid_policy must be one of: fail, flag, keep.")
     invalid_value = redshift.get("invalid_value", DEFAULT_INVALID_REDSHIFT_VALUE)
     if not isinstance(invalid_value, int | float) or isinstance(invalid_value, bool):
         raise CurateError("redshift.invalid_value must be numeric.")
@@ -999,9 +999,10 @@ def _validate_redshift(df: Any, config: dict[str, Any]) -> tuple[Any, str]:
             f"Redshift column '{column}' is outside the required range ({redshift_min}, {redshift_max}). "
             f"Observed range: [{min_value}, {max_value}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
-            "or set redshift.invalid_policy: flag to map invalid values to -1."
+            "set redshift.invalid_policy to flag to map invalid values to -1, "
+            "or set it to keep to preserve the original values."
         )
-    if invalid_count:
+    if invalid_count and invalid_policy == "flag":
         df = _flag_invalid_redshifts(df, column, invalid_value, allow_blueshifts)
     return df, column
 
@@ -1096,9 +1097,10 @@ def _validate_standard_columns(df: Any, config: dict[str, Any]) -> tuple[Any, st
             f"({redshift_min}, {redshift_max}). "
             f"Observed range: [{z_min}, {z_max}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
-            "or set redshift.invalid_policy: flag to map invalid values to -1."
+            "set redshift.invalid_policy to flag to map invalid values to -1, "
+            "or set it to keep to preserve the original values."
         )
-    if invalid_redshift_count:
+    if invalid_redshift_count and invalid_policy == "flag":
         df = _flag_invalid_redshifts(df, redshift_column, invalid_value, allow_blueshifts)
     return df, ra_column, dec_column, redshift_column
 
@@ -1360,7 +1362,8 @@ def _validate_standard_hats_catalog(catalog: Any, config: dict[str, Any]) -> tup
             f"({redshift_min}, {redshift_max}). "
             f"Observed range: [{z_min}, {z_max}]. "
             "Use a supported redshift transformation, such as velocity_to_redshift or coalesce_redshift, "
-            "or set redshift.invalid_policy: flag to map invalid values to -1."
+            "set redshift.invalid_policy to flag to map invalid values to -1, "
+            "or set it to keep to preserve the original values."
         )
     return ra_column, dec_column, redshift_column, allow_blueshifts
 
@@ -1372,8 +1375,10 @@ def _finalize_hats_partition(
     allow_blueshifts: bool,
     final_columns: list[str],
 ) -> pd.DataFrame:
-    _column, _invalid_policy, invalid_value, _configured_allow_blueshifts = _redshift_config(config)
-    partition = _flag_invalid_redshifts(partition.copy(), redshift_column, invalid_value, allow_blueshifts)
+    _column, invalid_policy, invalid_value, _configured_allow_blueshifts = _redshift_config(config)
+    partition = partition.copy()
+    if invalid_policy == "flag":
+        partition = _flag_invalid_redshifts(partition, redshift_column, invalid_value, allow_blueshifts)
     partition = _apply_redshift_filters(partition, config, redshift_column)
     return partition[final_columns]
 

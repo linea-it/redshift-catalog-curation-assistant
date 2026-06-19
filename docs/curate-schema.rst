@@ -49,7 +49,7 @@ Required Fields
   Final redshift column to validate and keep. Redshift must be numeric in
   ``(-0.1, 20)`` by default. Set ``redshift.allow_blueshifts: false`` to use
   ``(0, 20)`` instead. Invalid values stop curation unless
-  ``redshift.invalid_policy: flag`` is set.
+  ``redshift.invalid_policy: flag`` or ``redshift.invalid_policy: keep`` is set.
 
 Input And Output Options
 ------------------------
@@ -194,6 +194,18 @@ To keep processing and map invalid values to the standard ``-1`` flag:
      allow_blueshifts: false
      invalid_policy: flag
      invalid_value: -1
+
+To keep processing without changing redshift values outside the standard range:
+
+.. code-block:: yaml
+
+   redshift:
+     column: z
+     invalid_policy: keep
+
+``keep`` still requires a numeric redshift column. If ``redshift.filters`` are
+configured, values outside the standard range are removed before those filters
+are applied.
 
 To keep only rows inside a science-specific redshift window, add
 ``redshift.filters``. Filters are applied to the final redshift column after
