@@ -19,6 +19,8 @@ LOGGER = logging.getLogger(__name__)
 PARQUET_SUFFIXES = {".parquet", ".pq"}
 FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 COMPRESSED_SUFFIXES = {".gz", ".bz2", ".xz", ".zip"}
+TEXT_SUFFIXES = {".csv", ".txt"}
+HEADERLESS_SUFFIXES = {".dat", ".idz"}
 SAMPLE_MAX_COLUMNS = 100
 PARQUET_STATS_BATCH_SIZE = 50
 FITS_STATS_BATCH_SIZE = 8
@@ -1283,6 +1285,83 @@ def _build_report(
         "sample": sample.to_dict(orient="records"),
         "warnings": warnings,
     }
+
+
+def _tabular_schema_columns(input_path: Path, config: dict[str, Any]) -> list[str]:
+    suffix = _data_suffix(input_path)
+    if suffix in TEXT_SUFFIXES:
+        return pd.read_csv(input_path, nrows=0).columns.astype(str).tolist()
+    if suffix in HEADERLESS_SUFFIXES:
+        detected_columns = pd.read_csv(input_path, sep=r"\s+", comment="#", header=None, nrows=1).shape[1]
+        column_names = config.get("column_names")
+        if not column_names:
+            msg = (
+                f"{input_path} does not contain column names. Provide exactly {detected_columns} "
+                "column names with 'column_names' in YAML, or with --column-name/--column-names in the CLI."
+            )
+            raise ValueError(msg)
+        if len(column_names) != detected_columns:
+            msg = (
+                f"column_names has {len(column_names)} entries, but {input_path} has "
+                f"{detected_columns} columns. Update 'column_names' in YAML, or "
+                "--column-name/--column-names in the CLI."
+            )
+            raise ValueError(msg)
+        return list(column_names)
+    raise ValueError(f"Unsupported file type: {''.join(input_path.suffixes) or input_path}")
+
+
+def _fits_schema_columns(input_path: Path, config: dict[str, Any]) -> list[str]:
+    import fitsio
+
+    fits_hdu = int(config.get("fits_hdu", 1))
+    with fitsio.FITS(input_path) as fits_file:
+        hdu = fits_file[fits_hdu]
+        return _fits_table_column_names(hdu.read_header())
+
+
+def _hats_schema_columns(input_path: Path) -> list[str]:
+    try:
+        import lsdb
+    except ImportError as exc:
+        raise RuntimeError(
+            "lsdb is required to inspect HATS catalogs. Install the project with LSDB."
+        ) from exc
+
+    return list(lsdb.open_catalog(input_path).columns)
+
+
+def _inspect_schema_columns(input_path: Path, config: dict[str, Any]) -> list[str]:
+    if is_hats_input(input_path):
+        return _hats_schema_columns(input_path)
+    if _is_parquet_input(input_path):
+        return _parquet_columns(_parquet_dataset(input_path).schema)
+    if _is_fits_input(input_path):
+        from ..fits.fits import _check_compressed_fits_size
+
+        _check_compressed_fits_size(input_path)
+        return _fits_schema_columns(input_path, config)
+    _check_raw_input_policy(input_path, config)
+    return _tabular_schema_columns(input_path, config)
+
+
+def dry_run_inspect_config(config: dict[str, Any]) -> Path:
+    """Validate an inspect configuration and input schema without writing reports."""
+    cfg = _validate_inspect_config(config)
+    input_path = Path(cfg["input_file"])
+    if not input_path.exists():
+        raise ValueError(f"input_file does not exist: {input_path}")
+    survey = cfg.get("survey_name", input_path.stem)
+    outdir = Path(cfg["output_dir"]) if cfg.get("output_dir") is not None else Path("reports") / survey
+
+    if is_hats_input(input_path) or _parallel_stats_enabled(cfg):
+        from ..executor import dask_cluster_config
+
+        dask_cluster_config(cfg)
+
+    columns = _inspect_schema_columns(input_path, cfg)
+    _selected_report_columns(columns, cfg)
+    return outdir
 
 
 def _markdown_value(value: Any) -> str:

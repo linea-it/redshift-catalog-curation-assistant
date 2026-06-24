@@ -18,9 +18,11 @@ The core local workflow is built around these commands:
 - `redshift-curator run config.yaml`
 
 Phase 0 establishes packaging, CLI structure, tests, documentation, and small
-example inputs. Phase 1 implements useful local inspection for CSV, Parquet, and
-FITS catalogs. The local `prepare` workflow normalizes large raw catalogs to
-Parquet datasets. Phase 2 implements local curation to explicit Parquet outputs:
-small raw inputs can be curated in memory, while large inputs are expected to be
-prepared as Parquet first. Expensive inspect statistics and large Parquet
-curation paths can use Dask for local or HPC execution.
+example inputs. Phase 1 implements useful local inspection for CSV, Parquet,
+FITS, and HATS catalogs. The local `prepare` workflow normalizes local inputs
+to Parquet datasets or HATS collections, while rejecting HATS inputs because
+they are already supported directly downstream. Phase 2 implements local
+curation to explicit Parquet or HATS outputs: small raw inputs can be curated
+in memory, while large raw inputs are expected to be prepared as Parquet first.
+Expensive inspect statistics, large Parquet curation paths, and HATS conversion
+can use Dask for local or HPC execution.

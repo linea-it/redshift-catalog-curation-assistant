@@ -1,0 +1,274 @@
+# Full curate configuration reference; choose mutually exclusive examples before use.
+
+# Single input path; remove input_files when using this.
+input_file: path/to/prepared_or_raw_catalog.parquet
+
+# Multiple files for one logical catalog; remove input_file when using this.
+input_files:
+  - path/to/catalog_part0.parquet
+  - path/to/catalog_part1.parquet
+
+# Output Parquet dataset or HATS collection directory.
+output_dir: reports/curated/example.parquet
+
+# Replace output_dir when it already exists.
+overwrite: false
+
+# FITS table HDU for small FITS input.
+fits_hdu: 1
+
+# Names for headerless whitespace files (.dat, .idz).
+column_names:
+  - ra
+  - dec
+  - z
+
+# Output columns to keep; empty keeps all source columns.
+column_selection:
+  - object_id
+  - ra
+  - dec
+  - z
+
+# Alternative column_selection form accepted by the code.
+# column_selection:
+#   # Output columns to keep.
+#   keep_columns:
+#     - object_id
+#     - ra
+#     - dec
+#     - z
+
+# Final coordinate columns to validate.
+coordinates:
+  # RA degrees in [0, 360).
+  ra_column: ra
+  # Dec degrees in (-90, 90).
+  dec_column: dec
+
+# Legacy alias for coordinates.
+# coordinate_validation:
+#   # RA degrees in [0, 360).
+#   ra_column: ra
+#   # Dec degrees in (-90, 90).
+#   dec_column: dec
+
+# Final redshift rules.
+redshift:
+  # Final redshift column.
+  column: z
+  # Invalid policy: fail, flag, or keep.
+  invalid_policy: fail
+  # Replacement value when invalid_policy is flag.
+  invalid_value: -1.0
+  # Allow -0.1 < z; false requires z > 0.
+  allow_blueshifts: true
+  # Extra row filters after validation.
+  filters:
+    # Comparison operator: <, <=, >, >=, ==, or !=.
+    - op: "<"
+      # Numeric comparison value.
+      value: 20.0
+    # Alias for op accepted by the code.
+    - operator: ">"
+      value: -0.1
+
+# Legacy alias for redshift.
+# redshift_validation:
+#   # Final redshift column.
+#   column: z
+#   # Invalid policy: fail, flag, or keep.
+#   invalid_policy: fail
+#   # Replacement value when invalid_policy is flag.
+#   invalid_value: -1.0
+#   # Allow -0.1 < z; false requires z > 0.
+#   allow_blueshifts: true
+#   # Extra row filters after validation.
+#   filters: []
+
+# Declarative transformations run before validation.
+transformations:
+  # Add a constant-valued column.
+  - type: add_constant_column
+    # Output column name.
+    name: survey
+    # Constant value.
+    value: EXAMPLE
+
+  # Cast a column with pandas/Dask astype.
+  - type: cast
+    # Column to cast.
+    column: z
+    # Target dtype.
+    dtype: float64
+
+  # Convert RA H/M/S columns to degrees.
+  - type: ra_hms_to_degrees
+    # Output RA degree column.
+    output_column: ra_deg
+    # Hour component column.
+    hours: ra_h
+    # Minute component column.
+    minutes: ra_m
+    # Second component column.
+    seconds: ra_s
+
+  # Convert Dec D/M/S columns to degrees.
+  - type: dec_dms_to_degrees
+    # Output Dec degree column.
+    output_column: dec_deg
+    # Degree component column.
+    degrees: dec_d
+    # Arcminute component column.
+    arcminutes: dec_m
+    # Arcsecond component column.
+    arcseconds: dec_s
+
+  # Convert coordinates with Astropy SkyCoord.
+  - type: skycoord_to_degrees
+    # Input RA column.
+    ra_column: ra_text
+    # Input Dec column.
+    dec_column: dec_text
+    # Output RA degree column.
+    output_ra_column: ra_skycoord_deg
+    # Output Dec degree column.
+    output_dec_column: dec_skycoord_deg
+    # RA unit passed to SkyCoord.
+    ra_unit: hourangle
+    # Dec unit passed to SkyCoord.
+    dec_unit: deg
+
+  # Convert velocity in km/s to redshift.
+  - type: velocity_to_redshift
+    # Velocity column.
+    velocity_column: velocity_kms
+    # Output redshift column.
+    output_column: z_from_velocity
+    # Optional velocity error column.
+    velocity_error_column: velocity_err_kms
+    # Optional redshift error output.
+    error_output_column: z_err
+
+  # Pick the first valid redshift candidate.
+  - type: coalesce_redshift
+    # Output redshift column.
+    output_column: z_best
+    # Candidate columns in priority order.
+    columns:
+      - z_spec
+      - z_phot
+    # Replacement when no candidate is valid.
+    invalid_value: -1.0
+    # Override redshift.allow_blueshifts for this transform.
+    allow_blueshifts: true
+    # Optional source label output column.
+    label_column: z_source
+    # Labels matching candidate columns.
+    labels:
+      - spec
+      - phot
+    # Label used when no candidate is valid.
+    invalid_label: invalid
+
+# Position for generated columns: first or last.
+generated_columns_position: last
+
+# Output artifact type: parquet or hats.
+output_format: parquet
+
+# Output layout: auto, single, or partitioned.
+output_mode: auto
+
+# Allow single output for large input.
+allow_large_single_output: false
+
+# Size threshold for Dask paths, in MB; 0 treats existing inputs as large.
+large_file_threshold_mb: 100
+
+# Legacy alias for large_file_threshold_mb; prefer large_file_threshold_mb.
+dask_threshold_mb: 100
+
+# Target Parquet partition size, in MB.
+target_partition_size_mb: 100
+
+# Optional FITS chunk size setting accepted by validation.
+chunk_size_rows: 200000
+
+# Prefix for generated Parquet part files.
+part_prefix: example
+
+# Persist transformed Dask data before validation.
+persist_after_transformations: false
+
+# Show progress bars in Dask/HATS operations.
+progress_bar: false
+
+# HATS options; used when output_format is hats.
+hats:
+  # Catalog name inside the HATS collection.
+  catalog_name: example_catalog
+  # RA column for HATS indexing; defaults to coordinates.ra_column.
+  ra_column: ra
+  # Dec column for HATS indexing; defaults to coordinates.dec_column.
+  dec_column: dec
+  # Write a default margin cache.
+  hats_output_with_margin: true
+  # Margin cache radius in arcseconds.
+  margin_threshold: 5.0
+  # Optional hats_import sort column.
+  sort_columns: null
+  # Ask LSDB to create a thumbnail.
+  create_thumbnail: false
+
+# Top-level HATS aliases accepted by the code.
+catalog_name: example_catalog
+ra_column: ra
+dec_column: dec
+hats_output_with_margin: true
+
+# Dask executor used by large paths and HATS curation.
+dask_cluster:
+  # Executor name: local or slurm.
+  name: local
+  # LocalCluster or SLURM settings.
+  args:
+    # Local worker count.
+    n_workers: 1
+    # Threads per local worker.
+    threads_per_worker: 1
+    # Local worker memory limit.
+    memory_limit: 6GB
+    # Local dashboard address; null disables it.
+    dashboard_address: null
+  # Optional Dask log directory for non-HATS paths.
+  logs_dir: null
+
+# SLURM example; replace dask_cluster above when needed.
+# dask_cluster:
+#   # Use dask-jobqueue SLURMCluster.
+#   name: slurm
+#   # Optional log directory.
+#   logs_dir: reports/curated/example.parquet/logs
+#   # SLURM job and scaling options.
+#   args:
+#     # SLURMCluster constructor options.
+#     instance:
+#       # Cores per job; required.
+#       cores: 4
+#       # Processes per job.
+#       processes: 1
+#       # Memory per job; required.
+#       memory: 24GB
+#       # SLURM queue/partition.
+#       queue: regular
+#       # SLURM account.
+#       account: project
+#       # Extra SBATCH directives.
+#       job_extra_directives: []
+#     # Adaptive scaling limits.
+#     scale:
+#       # Minimum jobs; required for SLURM.
+#       minimum_jobs: 1
+#       # Maximum adaptive jobs; 0 disables adapt.
+#       maximum_jobs: 0

@@ -39,8 +39,11 @@ def test_prepare_help():
     result = CliRunner().invoke(cli, ["prepare", "--help"])
 
     assert result.exit_code == 0
+    assert "--output-format" in result.output
     assert "--output-mode" in result.output
     assert "--allow-large-single-output" in result.output
+    assert "--hats-ra-column" in result.output
+    assert "--dry-run" in result.output
 
 
 def test_inspect_fits_reports_large_compressed_file_error(tmp_path, monkeypatch):
@@ -85,6 +88,61 @@ def test_prepare_path_command(tmp_path):
     assert (output_dir / "_redshift_curator_manifest.json").exists()
 
 
+def test_prepare_path_dry_run_does_not_write_output(tmp_path):
+    """Ensure prepare dry-run validates schema without materializing output."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+    output_dir = tmp_path / "prepared"
+
+    result = CliRunner().invoke(
+        cli,
+        ["prepare", "--path", str(csv), "--output-dir", str(output_dir), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    assert "Prepare dry-run OK" in result.output
+    assert str(output_dir) in result.output
+    assert not output_dir.exists()
+
+
+def test_prepare_path_cli_can_validate_hats_flags_in_dry_run(tmp_path):
+    """Ensure direct prepare CLI exposes enough HATS options for schema validation."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec,z\n1,10.0,-1.0,0.1\n")
+    output_dir = tmp_path / "prepared_hats"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prepare",
+            "--path",
+            str(csv),
+            "--output-dir",
+            str(output_dir),
+            "--output-format",
+            "hats",
+            "--hats-catalog-name",
+            "toy",
+            "--hats-ra-column",
+            "ra",
+            "--hats-dec-column",
+            "dec",
+            "--hats-margin-threshold",
+            "5",
+            "--no-hats-output-with-margin",
+            "--hats-sort-columns",
+            "object_id",
+            "--hats-create-thumbnail",
+            "--progress-bar",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Prepare dry-run OK" in result.output
+    assert not output_dir.exists()
+
+
 def test_prepare_rejects_missing_output_dir(tmp_path):
     """Ensure prepare requires an output directory when no config is provided."""
     csv = tmp_path / "sample.csv"
@@ -112,6 +170,29 @@ def test_inspect_path_command(tmp_path, monkeypatch):
     assert "Writing inspection reports" in result.output
     assert "Inspect completed" in result.output
     assert (tmp_path / "reports" / "PATH_SAMPLE" / "inspect_report.json").exists()
+
+
+def test_inspect_path_dry_run_does_not_write_reports(tmp_path, monkeypatch):
+    """Ensure inspect dry-run validates schema without writing reports."""
+    monkeypatch.chdir(tmp_path)
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    result = CliRunner().invoke(cli, ["inspect", "--path", str(csv), "--survey-name", "DRY"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / "reports" / "DRY" / "inspect_report.json").exists()
+
+    dry_reports = tmp_path / "reports" / "DRY_ONLY"
+    result = CliRunner().invoke(
+        cli,
+        ["inspect", "--path", str(csv), "--survey-name", "DRY_ONLY", "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    assert "Inspect dry-run OK" in result.output
+    assert "reports/DRY_ONLY" in result.output
+    assert not dry_reports.exists()
 
 
 def test_inspect_path_command_accepts_output_dir(tmp_path, monkeypatch):
@@ -471,6 +552,56 @@ def test_curate_command(tmp_path):
     assert "Writing single Parquet file" in result.output
     assert "Curate completed" in result.output
     assert sorted(output_dir.glob("*.parquet"))
+
+
+def test_curate_command_dry_run_does_not_write_output(tmp_path):
+    """Ensure curate dry-run validates schema without writing output."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n")
+    output_dir = tmp_path / "curated"
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"input_file: {csv}\n"
+        f"output_dir: {output_dir}\n"
+        "coordinates:\n"
+        "  ra_column: ra\n"
+        "  dec_column: dec\n"
+        "redshift:\n"
+        "  column: z\n"
+    )
+
+    result = CliRunner().invoke(cli, ["curate", str(cfg), "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "Curate dry-run OK" in result.output
+    assert str(output_dir) in result.output
+    assert not output_dir.exists()
+
+
+def test_curate_command_dry_run_rejects_missing_selected_column(tmp_path):
+    """Ensure curate dry-run catches schema-level column errors."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("ra,dec,z\n10.0,-1.0,0.1\n")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"input_file: {csv}\n"
+        f"output_dir: {tmp_path / 'curated'}\n"
+        "column_selection:\n"
+        "  - ra\n"
+        "  - dec\n"
+        "  - z\n"
+        "  - missing\n"
+        "coordinates:\n"
+        "  ra_column: ra\n"
+        "  dec_column: dec\n"
+        "redshift:\n"
+        "  column: z\n"
+    )
+
+    result = CliRunner().invoke(cli, ["curate", str(cfg), "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "Curate input is missing required columns: missing" in result.output
 
 
 def test_curate_command_can_suppress_info_logs(tmp_path):

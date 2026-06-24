@@ -40,7 +40,8 @@ Versioned fixtures:
 - `tests/data/raw/sdss_dr19_sample.fits`: first 1000 rows from the SDSS DR19
   spAll FITS table HDU, preserving all columns.
 - `tests/data/raw/elaisfbmc_collection`: small HATS/LSDB collection used by
-  `configs/inspect/elaisfbmc_collection.example.yaml`.
+  `configs/inspect/elaisfbmc_collection.example.yaml` and
+  `configs/curate/elaisfbmc_collection.example.yaml`.
 
 Catalogs without column names can be read only when explicit column names are
 provided, either with `column_names` in YAML or with `--column-name`/

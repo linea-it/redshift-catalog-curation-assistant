@@ -191,6 +191,162 @@ def _as_paths(paths: list[str | Path]) -> list[Path]:
     return [Path(path) for path in paths]
 
 
+def _input_paths(config: dict[str, Any]) -> list[Path]:
+    if "input_files" in config:
+        paths = config["input_files"]
+        if not isinstance(paths, list | tuple) or not paths:
+            raise PrepareError("input_files must be a non-empty list of paths.")
+        if not all(isinstance(path, str | Path) and str(path).strip() for path in paths):
+            raise PrepareError("input_files must contain only non-empty path strings.")
+        return _as_paths(list(paths))
+    if "input_file" not in config:
+        raise PrepareError("prepare config requires input_file or input_files.")
+    input_file = config["input_file"]
+    if not isinstance(input_file, str | Path) or not str(input_file).strip():
+        raise PrepareError("input_file must be a non-empty path string.")
+    return [Path(input_file)]
+
+
+def _validate_prepare_bool(config: dict[str, Any], key: str) -> None:
+    value = config.get(key)
+    if value is not None and not isinstance(value, bool):
+        raise PrepareError(f"{key} must be true or false.")
+
+
+def _validate_prepare_positive_int(config: dict[str, Any], key: str) -> None:
+    value = config.get(key)
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise PrepareError(f"{key} must be a positive integer.")
+
+
+def _validate_prepare_non_negative_number(config: dict[str, Any], key: str) -> None:
+    value = config.get(key)
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise PrepareError(f"{key} must be a non-negative number.")
+
+
+def _validate_prepare_positive_number(config: dict[str, Any], key: str) -> None:
+    value = config.get(key)
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        raise PrepareError(f"{key} must be a positive number.")
+
+
+def _validate_prepare_column_names(config: dict[str, Any]) -> None:
+    column_names = config.get("column_names")
+    if column_names is None:
+        return
+    if not isinstance(column_names, list | tuple) or not column_names:
+        raise PrepareError("column_names must be a non-empty list of strings.")
+    if not all(isinstance(column, str) and column.strip() for column in column_names):
+        raise PrepareError("column_names must contain only non-empty strings.")
+
+
+def _parquet_schema_for_path(path: Path) -> list[str]:
+    import pyarrow.dataset as ds
+
+    return [str(name) for name in ds.dataset(path, format="parquet").schema.names]
+
+
+def _dry_run_schema_for_path(path: Path, suffix: str, config: dict[str, Any]) -> list[str]:
+    if path.is_dir() and suffix in PARQUET_SUFFIXES:
+        return _parquet_schema_for_path(path)
+    return _schema_for_path(path, suffix, config)
+
+
+def dry_run_prepare_config(config: dict[str, Any]) -> Path:
+    """Validate a prepare configuration and input schemas without writing output."""
+    if not isinstance(config, dict):
+        raise PrepareError("prepare config must be a YAML mapping.")
+    if not config:
+        raise PrepareError("prepare config is empty.")
+
+    input_paths = _input_paths(config)
+    output_dir_value = config.get("output_dir")
+    if not isinstance(output_dir_value, str | Path) or not str(output_dir_value).strip():
+        raise PrepareError("prepare config requires a non-empty output_dir.")
+    output_dir = Path(output_dir_value)
+    for key in ["overwrite", "allow_large_single_output", "progress_bar"]:
+        _validate_prepare_bool(config, key)
+    _validate_prepare_column_names(config)
+    _validate_prepare_positive_int(config, "fits_hdu")
+    _validate_prepare_positive_int(config, "chunk_size_rows")
+    _validate_prepare_non_negative_number(config, "large_file_threshold_mb")
+    _validate_prepare_non_negative_number(config, "dask_threshold_mb")
+    _validate_prepare_positive_number(config, "target_partition_size_mb")
+    if "part_prefix" in config and (
+        not isinstance(config["part_prefix"], str) or not config["part_prefix"].strip()
+    ):
+        raise PrepareError("part_prefix must be a non-empty string.")
+
+    output_format = _output_format(config)
+    _output_mode(config)
+    _target_partition_size_bytes(config)
+    cluster_config = dask_cluster_config(config)
+    _dask_logs_dir(cluster_config, output_dir)
+
+    for path in input_paths:
+        if not path.exists():
+            raise PrepareError(f"input path does not exist: {path}")
+        if is_hats_input(path):
+            raise PrepareError(
+                "Input is already a HATS catalog or collection. HATS is supported directly by "
+                "inspect and curate, so prepare is not required for this input."
+            )
+        _check_large_compressed(path, _large_file_threshold_bytes(config))
+
+    if len(input_paths) == 1 and input_paths[0].is_dir():
+        if not any(input_paths[0].glob("*.parquet")) and not (input_paths[0] / "_metadata").exists():
+            raise PrepareError(f"Unsupported directory input: {input_paths[0]}. Expected a Parquet dataset.")
+        schema = _parquet_schema_for_path(input_paths[0])
+        if output_format == "hats":
+            ra_column, dec_column = _hats_ra_dec_columns(config)
+            missing = [column for column in [ra_column, dec_column] if column not in schema]
+            if missing:
+                raise PrepareError(
+                    f"{HATS_COORDINATE_ERROR} Missing coordinate columns: {', '.join(missing)}."
+                )
+            _hats_margin_threshold(config)
+            _hats_catalog_name(output_dir, config)
+            _hats_sort_columns(config)
+        return output_dir
+
+    suffixes = {_data_suffix(path) for path in input_paths}
+    if len(suffixes) != 1:
+        raise PrepareError("All input files must have the same format before prepare can partition them.")
+    suffix = suffixes.pop()
+    schemas = {path: _dry_run_schema_for_path(path, suffix, config) for path in input_paths}
+    first_schema = schemas[input_paths[0]]
+    mismatches = {path: schema for path, schema in schemas.items() if schema != first_schema}
+    if mismatches:
+        lines = ["Multi-file inputs must describe one logical catalog with the same schema."]
+        lines.append(f"{input_paths[0]}: {', '.join(first_schema)}")
+        for path, schema in mismatches.items():
+            lines.append(f"{path}: {', '.join(schema)}")
+        raise PrepareError("\n".join(lines))
+
+    is_small_input = _total_input_size(input_paths) < _large_file_threshold_bytes(config)
+    _resolve_output_mode(
+        config,
+        is_single_small_file=len(input_paths) == 1 and is_small_input,
+        is_multi_file=len(input_paths) > 1,
+    )
+    if output_format == "hats":
+        ra_column, dec_column = _hats_ra_dec_columns(config)
+        missing = [column for column in [ra_column, dec_column] if column not in first_schema]
+        if missing:
+            raise PrepareError(f"{HATS_COORDINATE_ERROR} Missing coordinate columns: {', '.join(missing)}.")
+        _hats_margin_threshold(config)
+        _hats_catalog_name(output_dir, config)
+        _hats_sort_columns(config)
+    return output_dir
+
+
 def _write_manifest(
     output_dir: Path,
     input_paths: list[Path],

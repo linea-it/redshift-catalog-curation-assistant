@@ -1,0 +1,170 @@
+# Full inspect configuration reference.
+
+# Catalog file, Parquet dataset, or HATS catalog/collection to inspect.
+input_file: path/to/catalog.csv
+
+# Report name; defaults to the input stem.
+survey_name: EXAMPLE_SURVEY
+
+# Report directory; defaults to reports/<survey_name>.
+output_dir: reports/inspect/example_survey
+
+# FITS table HDU; used only for FITS input.
+fits_hdu: 1
+
+# Names for headerless whitespace files (.dat, .idz).
+column_names:
+  - ra
+  - dec
+  - z
+
+# Columns included in reports; null means all columns.
+column_selection: null
+
+# Statistics scope: candidates, all, or none.
+stats_mode: candidates
+
+# Unique categorical values reported per column.
+unique_limit: 10
+
+# Maximum columns included in sample rows.
+sample_max_columns: 100
+
+# Random seed for HATS sample rows.
+sample_seed: 42
+
+# Size threshold for Dask-backed raw reads, in MB; 0 disables this threshold.
+dask_threshold_mb: 100
+
+# Permit direct inspection of large raw files.
+allow_large_raw_inspect: false
+
+# Use Dask tasks for Parquet/FITS stats.
+parallel_stats: false
+
+# Parquet columns per stats batch.
+parquet_stats_batch_size: 50
+
+# FITS columns per stats batch.
+fits_stats_batch_size: 8
+
+# FITS rows per parallel stats chunk.
+fits_stats_chunk_rows: 200000
+
+# Alias used by FITS stats if fits_stats_chunk_rows is absent.
+chunk_size_rows: 200000
+
+# Regexes used to identify science columns.
+column_patterns:
+  # Right ascension candidates.
+  ra:
+    - "^ra$"
+    - "(^|_)ra_deg($|_)"
+    - "(^|_)target_ra($|_)"
+    - "(^|_)obsra($|_)"
+    - "(^|_)ra_j2000($|_)"
+    - "^alpha"
+    - "(^|_)right_ascension($|_)"
+  # Declination candidates.
+  dec:
+    - "^dec$"
+    - "dec_deg"
+    - "target_dec"
+    - "obsdec"
+    - "dec_j2000"
+    - "^delta"
+    - "(^|_)declination($|_)"
+  # Redshift candidates.
+  redshift:
+    - "^z$"
+    - "redshift"
+    - "zspec"
+    - "z_spec"
+    - "zphot"
+    - "z_phot"
+    - "best_z"
+    - "z_ml"
+    - "z_helio"
+  # Quality or warning flags.
+  quality:
+    - "quality"
+    - "qual"
+    - "qop"
+    - "(^|_)flag($|_)"
+    - "zflag"
+    - "zwarn"
+    - "zwarning"
+    - "z_flag"
+    - "vi_quality"
+    - "confidence"
+  # Redshift uncertainty candidates.
+  redshift_error:
+    - "(^|_)z_err($|_)"
+    - "^zerr$"
+    - "(^|_)err_z($|_)"
+    - "(^|_)z_error($|_)"
+    - "(^|_)sigma_z($|_)"
+  # Object identifier candidates.
+  id:
+    - "^id$"
+    - "(^|_)objectid($|_)"
+    - "(^|_)object_id($|_)"
+    - "(^|_)targetid($|_)"
+    - "(^|_)specid($|_)"
+    - "(^|_)catalogid($|_)"
+    - "^tileid$"
+  # Object type candidates.
+  object_type:
+    - "(^|_)class($|_)"
+    - "(^|_)subclass($|_)"
+    - "(^|_)objtype($|_)"
+    - "(^|_)spectype($|_)"
+    - "(^|_)subtype($|_)"
+    - "(^|_)eta_type($|_)"
+    - "^type$"
+
+# Dask executor used by parallel stats.
+dask_cluster:
+  # Executor name: local or slurm.
+  name: local
+  # LocalCluster or SLURM settings.
+  args:
+    # Local worker count.
+    n_workers: 1
+    # Threads per local worker.
+    threads_per_worker: 1
+    # Local worker memory limit.
+    memory_limit: 6GB
+    # Local dashboard address; null disables it.
+    dashboard_address: null
+  # Optional Dask log directory.
+  logs_dir: null
+
+# SLURM example; replace dask_cluster above when needed.
+# dask_cluster:
+#   # Use dask-jobqueue SLURMCluster.
+#   name: slurm
+#   # Optional log directory.
+#   logs_dir: reports/inspect/example_survey/logs
+#   # SLURM job and scaling options.
+#   args:
+#     # SLURMCluster constructor options.
+#     instance:
+#       # Cores per job; required.
+#       cores: 4
+#       # Processes per job.
+#       processes: 1
+#       # Memory per job; required.
+#       memory: 24GB
+#       # SLURM queue/partition.
+#       queue: regular
+#       # SLURM account.
+#       account: project
+#       # Extra SBATCH directives.
+#       job_extra_directives: []
+#     # Adaptive scaling limits.
+#     scale:
+#       # Minimum jobs; required for SLURM.
+#       minimum_jobs: 1
+#       # Maximum adaptive jobs; 0 disables adapt.
+#       maximum_jobs: 0
