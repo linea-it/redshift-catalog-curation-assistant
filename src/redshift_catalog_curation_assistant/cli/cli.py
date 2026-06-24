@@ -105,6 +105,11 @@ def cli(log_level):
     is_flag=True,
     help="Allow direct inspection of large non-Parquet raw inputs instead of requiring prepare first.",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate config and input schema without writing inspection reports.",
+)
 def inspect(
     config,
     input_path,
@@ -121,6 +126,7 @@ def inspect(
     dask_threshold_mb,
     dask_cluster,
     allow_large_raw_inspect,
+    dry_run,
 ):
     """Run inspection using CONFIG YAML or default settings from --path."""
     if bool(config) == bool(input_path):
@@ -158,6 +164,10 @@ def inspect(
             cfg["column_selection"] = parsed_column_selection
 
     try:
+        if dry_run:
+            outdir = rc_inspect.dry_run_inspect_config(cfg)
+            click.echo(f"Inspect dry-run OK; reports would be written to {outdir}")
+            return
         outdir = rc_inspect.run_inspect_config(cfg)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -287,6 +297,13 @@ def inspect_fits(path, max_columns):
     help="Prefix for generated Parquet part filenames. Defaults to input stem.",
 )
 @click.option(
+    "--output-format",
+    type=click.Choice(["parquet", "hats"], case_sensitive=False),
+    default="parquet",
+    show_default=True,
+    help="Prepared output format.",
+)
+@click.option(
     "--output-mode",
     type=click.Choice(["auto", "single", "partitioned"], case_sensitive=False),
     default="auto",
@@ -320,6 +337,47 @@ def inspect_fits(path, max_columns):
     show_default=True,
     help="Dask cluster config: 'local' or a JSON/Python dict matching the executor schema.",
 )
+@click.option(
+    "--hats-catalog-name",
+    help="Catalog name inside the HATS collection. Defaults to output directory name.",
+)
+@click.option(
+    "--hats-ra-column",
+    help="RA column for HATS output.",
+)
+@click.option(
+    "--hats-dec-column",
+    help="Dec column for HATS output.",
+)
+@click.option(
+    "--hats-output-with-margin/--no-hats-output-with-margin",
+    default=None,
+    help="Whether HATS output should include a default margin cache.",
+)
+@click.option(
+    "--hats-margin-threshold",
+    type=float,
+    help="HATS margin cache threshold in arcseconds.",
+)
+@click.option(
+    "--hats-sort-columns",
+    help="Optional column passed to hats_import for sorting.",
+)
+@click.option(
+    "--hats-create-thumbnail",
+    is_flag=True,
+    help="Ask LSDB to create a HATS thumbnail.",
+)
+@click.option(
+    "--progress-bar",
+    is_flag=True,
+    help="Show progress bars in supported HATS/Dask writers.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate config and input schemas without writing prepared output.",
+)
 def prepare(
     config,
     input_paths,
@@ -329,12 +387,22 @@ def prepare(
     large_file_threshold_mb,
     target_partition_size_mb,
     part_prefix,
+    output_format,
     output_mode,
     allow_large_single_output,
     overwrite,
     column_names,
     column_names_list,
     dask_cluster,
+    hats_catalog_name,
+    hats_ra_column,
+    hats_dec_column,
+    hats_output_with_margin,
+    hats_margin_threshold,
+    hats_sort_columns,
+    hats_create_thumbnail,
+    progress_bar,
+    dry_run,
 ):
     """Prepare catalog input as a partitioned Parquet dataset."""
     if config and (input_paths or output_dir):
@@ -351,20 +419,43 @@ def prepare(
             "chunk_size_rows": chunk_size_rows,
             "large_file_threshold_mb": large_file_threshold_mb,
             "target_partition_size_mb": target_partition_size_mb,
+            "output_format": output_format,
             "output_mode": output_mode,
             "allow_large_single_output": allow_large_single_output,
             "overwrite": overwrite,
             "dask_cluster": _parse_dask_cluster_option(dask_cluster),
+            "progress_bar": progress_bar,
         }
         if len(input_paths) == 1:
             cfg["input_file"] = str(input_paths[0])
         if part_prefix:
             cfg["part_prefix"] = part_prefix
+        hats_config = {}
+        if hats_catalog_name:
+            hats_config["catalog_name"] = hats_catalog_name
+        if hats_ra_column:
+            hats_config["ra_column"] = hats_ra_column
+        if hats_dec_column:
+            hats_config["dec_column"] = hats_dec_column
+        if hats_output_with_margin is not None:
+            hats_config["hats_output_with_margin"] = hats_output_with_margin
+        if hats_margin_threshold is not None:
+            hats_config["margin_threshold"] = hats_margin_threshold
+        if hats_sort_columns:
+            hats_config["sort_columns"] = hats_sort_columns
+        if hats_create_thumbnail:
+            hats_config["create_thumbnail"] = True
+        if hats_config:
+            cfg["hats"] = hats_config
         parsed_column_names = _parse_column_names_options(column_names, column_names_list)
         if parsed_column_names:
             cfg["column_names"] = parsed_column_names
 
     try:
+        if dry_run:
+            prepared = rc_prepare.dry_run_prepare_config(cfg)
+            click.echo(f"Prepare dry-run OK; output would be written to {prepared}")
+            return
         prepared = rc_prepare.prepare_catalog(cfg)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -377,10 +468,20 @@ def _planned_command(command: str, config: str) -> None:
 
 @cli.command()
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
-def curate(config):
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate config and input schema without writing curated output.",
+)
+def curate(config, dry_run):
     """Run local curation using CONFIG YAML."""
     try:
-        curated = rc_curate.curate_catalog(rc_curate.load_curate_config(Path(config)))
+        cfg = rc_curate.load_curate_config(Path(config))
+        if dry_run:
+            curated = rc_curate.dry_run_curate_config(cfg)
+            click.echo(f"Curate dry-run OK; output would be written to {curated}")
+            return
+        curated = rc_curate.curate_catalog(cfg)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Curated catalog written to {curated}")

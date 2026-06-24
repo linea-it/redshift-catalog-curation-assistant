@@ -465,6 +465,109 @@ def _validate_config(config: Any) -> dict[str, Any]:
     return config
 
 
+def _schema_columns_for_path(path: Path, config: dict[str, Any]) -> list[str]:
+    if is_hats_input(path):
+        try:
+            import lsdb
+        except ImportError as exc:
+            raise RuntimeError(
+                "lsdb is required to curate HATS catalogs. Install the project with LSDB."
+            ) from exc
+
+        return list(lsdb.open_catalog(path).columns)
+    if path.is_dir() and _is_parquet_input(path):
+        import pyarrow.dataset as ds
+
+        return [str(name) for name in ds.dataset(path, format="parquet").schema.names]
+    return _schema_for_path(path, _data_suffix(path), config)
+
+
+def dry_run_curate_config(config: dict[str, Any]) -> Path:
+    """Validate a curate configuration and input schemas without writing output."""
+    cfg = _validate_config(config)
+    input_paths = _input_paths(cfg)
+    output_dir = Path(cfg["output_dir"])
+    if output_dir.exists() and not bool(cfg.get("overwrite", False)):
+        raise CurateError(f"Output directory already exists: {output_dir}. Set overwrite: true.")
+
+    dask_cluster_config(cfg)
+
+    for path in input_paths:
+        if not path.exists():
+            raise CurateError(f"input path does not exist: {path}")
+
+    hats_inputs = [path for path in input_paths if is_hats_input(path)]
+    if hats_inputs:
+        if len(input_paths) != 1:
+            raise CurateError("HATS curate input must be a single catalog or collection path.")
+        if _output_format(cfg) != "hats":
+            raise CurateError("HATS curate input currently requires output_format: hats.")
+
+    total_size = _total_input_size(input_paths)
+    if (
+        total_size >= _large_file_threshold_bytes(cfg)
+        and not hats_inputs
+        and not _all_parquet_inputs(input_paths)
+    ):
+        raise CurateError(
+            "Large raw inputs must be prepared as Parquet before curate. "
+            "Run redshift-curator prepare first, then use the prepared Parquet directory."
+        )
+
+    schemas = {path: _schema_columns_for_path(path, cfg) for path in input_paths}
+    first_schema = schemas[input_paths[0]]
+    mismatches = {path: schema for path, schema in schemas.items() if schema != first_schema}
+    if mismatches:
+        lines = ["Multi-file curate inputs must describe one logical catalog with the same schema."]
+        lines.append(f"{input_paths[0]}: {', '.join(first_schema)}")
+        for path, schema in mismatches.items():
+            lines.append(f"{path}: {', '.join(schema)}")
+        raise CurateError("\n".join(lines))
+
+    available_columns = set(first_schema)
+    required_columns = _required_input_columns(cfg) or list(first_schema)
+    missing_input_columns = [column for column in required_columns if column not in available_columns]
+    if missing_input_columns:
+        raise CurateError(f"Curate input is missing required columns: {', '.join(missing_input_columns)}.")
+
+    selection = _column_selection(cfg)
+    if selection:
+        ra_column, dec_column = _coordinate_config(cfg)
+        redshift_column, _invalid_policy, _invalid_value, _allow_blueshifts = _redshift_config(cfg)
+        missing_required = [
+            column for column in [ra_column, dec_column, redshift_column] if column not in selection
+        ]
+        if missing_required:
+            raise CurateError(
+                "column_selection must include validated coordinate and redshift columns: "
+                + ", ".join(missing_required)
+                + "."
+            )
+        generated_columns = set(_generated_columns(cfg))
+        missing_output_columns = [
+            column
+            for column in selection
+            if column not in available_columns and column not in generated_columns
+        ]
+        if missing_output_columns:
+            raise CurateError(
+                f"column_selection references missing columns: {', '.join(missing_output_columns)}."
+            )
+
+    if _output_format(cfg) == "hats":
+        hats_ra_column, hats_dec_column = _hats_ra_dec_columns(cfg)
+        generated_columns = set(_generated_columns(cfg))
+        missing_hats_columns = [
+            column
+            for column in [hats_ra_column, hats_dec_column]
+            if column not in available_columns and column not in generated_columns
+        ]
+        if missing_hats_columns:
+            raise CurateError(f"HATS output references missing columns: {', '.join(missing_hats_columns)}.")
+
+    return output_dir
+
+
 def _ordered_unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
 

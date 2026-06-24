@@ -103,6 +103,15 @@ Input And Output Options
 ``dask_cluster``
   Optional executor configuration using the same schema as ``prepare``.
 
+Dry Run
+-------
+
+Use ``--dry-run`` to validate the curate config and input schema without
+writing curated output. The dry run validates config fields, transformation
+settings, input existence, schema compatibility, required input columns,
+``column_selection`` requirements, large raw input policy, and HATS output
+column references. It does not compute full RA, Dec, or redshift ranges.
+
 Large Input Behavior
 --------------------
 

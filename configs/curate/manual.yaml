@@ -1,9 +1,9 @@
-# Full curate configuration reference.
+# Full curate configuration reference; choose mutually exclusive examples before use.
 
-# Single input path; use either input_file or input_files.
+# Single input path; remove input_files when using this.
 input_file: path/to/prepared_or_raw_catalog.parquet
 
-# Multiple files for one logical catalog; use instead of input_file.
+# Multiple files for one logical catalog; remove input_file when using this.
 input_files:
   - path/to/catalog_part0.parquet
   - path/to/catalog_part1.parquet
@@ -183,10 +183,10 @@ output_mode: auto
 # Allow single output for large input.
 allow_large_single_output: false
 
-# Size threshold for Dask paths, in MB.
+# Size threshold for Dask paths, in MB; 0 treats existing inputs as large.
 large_file_threshold_mb: 100
 
-# Legacy alias for large_file_threshold_mb.
+# Legacy alias for large_file_threshold_mb; prefer large_file_threshold_mb.
 dask_threshold_mb: 100
 
 # Target Parquet partition size, in MB.

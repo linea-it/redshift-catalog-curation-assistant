@@ -33,7 +33,7 @@ sample_max_columns: 100
 # Random seed for HATS sample rows.
 sample_seed: 42
 
-# Size threshold for Dask-backed raw reads, in MB.
+# Size threshold for Dask-backed raw reads, in MB; 0 disables this threshold.
 dask_threshold_mb: 100
 
 # Permit direct inspection of large raw files.

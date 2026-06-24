@@ -27,7 +27,8 @@ Required Fields
   preparation.
 
 ``output_dir``
-  Directory where the prepared Parquet dataset and manifest are written.
+  Directory where the prepared Parquet dataset or HATS collection and manifest
+  are written.
 
 Input Options
 -------------
@@ -167,6 +168,28 @@ Prepare a small CSV sample as HATS:
 .. code-block:: console
 
    redshift-curator prepare configs/prepare/synthetic_hats.example.yaml
+
+Prepare HATS directly from CLI options:
+
+.. code-block:: console
+
+   redshift-curator prepare \
+     --path tests/data/raw/synthetic_redshift_catalog.csv \
+     --output-dir outputs/prepared/synthetic_hats \
+     --output-format hats \
+     --hats-ra-column ra \
+     --hats-dec-column dec \
+     --hats-catalog-name synthetic_hats
+
+Validate a prepare config or CLI invocation without writing output:
+
+.. code-block:: console
+
+   redshift-curator prepare configs/prepare/synthetic.example.yaml --dry-run
+   redshift-curator prepare \
+     --path tests/data/raw/synthetic_redshift_catalog.csv \
+     --output-dir outputs/prepared/synthetic.parquet \
+     --dry-run
 
 Prepare several files as one logical catalog:
 

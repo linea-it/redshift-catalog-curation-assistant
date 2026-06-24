@@ -68,7 +68,7 @@ Large Input Options
 
 ``dask_threshold_mb``
   Size threshold for using Dask on generic tabular inputs. Defaults to ``100``.
-  ``0`` forces Dask for supported tabular files.
+  ``0`` or a negative value disables threshold-based Dask reads for this path.
 
 ``allow_large_raw_inspect``
   ``false`` by default. Large raw inputs are normally blocked with a suggestion
@@ -93,6 +93,14 @@ Large Input Options
 ``dask_cluster``
   Optional Dask executor config. If omitted and a Dask path is used, the default
   local cluster has one worker, one thread per worker, and 6 GB memory.
+
+Dry Run
+-------
+
+Use ``--dry-run`` to validate the inspect config and input schema without
+writing ``inspect_report.json`` or ``inspect_report.md``. The dry run opens
+schema/metadata for supported inputs and validates selected columns, but it does
+not compute statistics or samples.
 
 HATS Input
 ----------

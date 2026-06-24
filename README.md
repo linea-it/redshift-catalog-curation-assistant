@@ -11,9 +11,9 @@ This project was created following the LINCC Frameworks Python Project Template
 
 A local-first CLI for technical curation of heterogeneous redshift catalogs.
 
-The tool helps a human curator inspect catalog structure, prepare large inputs
-as Parquet, and apply explicit curation rules. It does not make scientific
-decisions automatically.
+The tool helps a human curator inspect catalog structure, prepare local inputs
+as Parquet or HATS, and apply explicit curation rules. It does not make
+scientific decisions automatically.
 
 ## Install
 
@@ -36,8 +36,9 @@ Functional commands:
 
 - `inspect`: build JSON and Markdown inspection reports.
 - `inspect-fits`: summarize FITS HDUs without loading table data.
-- `prepare`: normalize raw inputs to Parquet datasets.
-- `curate`: apply explicit curation rules and write Parquet datasets.
+- `prepare`: normalize raw inputs to Parquet datasets or HATS collections.
+- `curate`: apply explicit curation rules and write Parquet datasets or HATS
+  collections.
 
 Planned command names are also present for later phases: `qa`,
 `validate-flags`, and `run`.
@@ -49,7 +50,7 @@ For large or repeated workflows, prepare first:
 
 ```bash
 redshift-curator prepare configs/prepare/sdss_dr19.example.yaml
-redshift-curator inspect --path outputs/prepared/sdss_dr19.parquet
+redshift-curator inspect --path reports/prepared/sdss_dr19.parquet
 redshift-curator curate configs/curate/sdss_dr19.example.yaml
 ```
 

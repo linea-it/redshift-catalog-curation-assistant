@@ -6,7 +6,7 @@ Redshift Catalog Curation Assistant is a local-first Python CLI for technical
 curation of heterogeneous redshift catalogs.
 
 The current workflow focuses on reproducible file-based inspection and safe
-preparation and curation of catalogs as Parquet datasets:
+preparation and curation of catalogs as Parquet datasets or HATS collections:
 
 .. code-block:: console
 
