@@ -1,0 +1,120 @@
+# Full prepare configuration reference.
+
+# Single input path; use either input_file or input_files.
+input_file: path/to/catalog.fits
+
+# Multiple files for one logical catalog; use instead of input_file.
+input_files:
+  - path/to/catalog_part0.fits
+  - path/to/catalog_part1.fits
+
+# Output Parquet dataset or HATS collection directory.
+output_dir: reports/prepared/example.parquet
+
+# Replace output_dir when it already exists.
+overwrite: false
+
+# FITS table HDU.
+fits_hdu: 1
+
+# Names for headerless whitespace files (.dat, .idz).
+column_names:
+  - ra
+  - dec
+  - z
+
+# Output artifact type: parquet or hats.
+output_format: parquet
+
+# Output layout: auto, single, or partitioned.
+output_mode: auto
+
+# Allow single output for large or multi-file input.
+allow_large_single_output: false
+
+# Size threshold for Dask/chunked paths, in MB.
+large_file_threshold_mb: 100
+
+# Legacy alias for large_file_threshold_mb.
+dask_threshold_mb: 100
+
+# Target Parquet partition size, in MB.
+target_partition_size_mb: 100
+
+# FITS rows per input chunk.
+chunk_size_rows: 200000
+
+# Prefix for generated Parquet part files.
+part_prefix: catalog
+
+# Show progress bars in HATS writers.
+progress_bar: false
+
+# HATS options; used when output_format is hats.
+hats:
+  # Catalog name inside the HATS collection.
+  catalog_name: example_catalog
+  # RA column for HATS indexing; required for HATS output.
+  ra_column: ra
+  # Dec column for HATS indexing; required for HATS output.
+  dec_column: dec
+  # Write a default margin cache.
+  hats_output_with_margin: true
+  # Margin cache radius in arcseconds.
+  margin_threshold: 5.0
+  # Optional hats_import sort column.
+  sort_columns: null
+  # Ask LSDB to create a thumbnail.
+  create_thumbnail: false
+
+# Top-level HATS aliases accepted by the code.
+catalog_name: example_catalog
+ra_column: ra
+dec_column: dec
+hats_output_with_margin: true
+
+# Dask executor used by large paths and HATS import.
+dask_cluster:
+  # Executor name: local or slurm.
+  name: local
+  # LocalCluster or SLURM settings.
+  args:
+    # Local worker count.
+    n_workers: 1
+    # Threads per local worker.
+    threads_per_worker: 1
+    # Local worker memory limit.
+    memory_limit: 6GB
+    # Local dashboard address; null disables it.
+    dashboard_address: null
+  # Optional Dask log directory; SLURM defaults to output_dir/logs.
+  logs_dir: null
+
+# SLURM example; replace dask_cluster above when needed.
+# dask_cluster:
+#   # Use dask-jobqueue SLURMCluster.
+#   name: slurm
+#   # Optional log directory.
+#   logs_dir: reports/prepared/example.parquet/logs
+#   # SLURM job and scaling options.
+#   args:
+#     # SLURMCluster constructor options.
+#     instance:
+#       # Cores per job; required.
+#       cores: 4
+#       # Processes per job.
+#       processes: 1
+#       # Memory per job; required.
+#       memory: 24GB
+#       # SLURM queue/partition.
+#       queue: regular
+#       # SLURM account.
+#       account: project
+#       # Extra SBATCH directives.
+#       job_extra_directives: []
+#     # Adaptive scaling limits.
+#     scale:
+#       # Minimum jobs; required for SLURM.
+#       minimum_jobs: 1
+#       # Maximum adaptive jobs; 0 disables adapt.
+#       maximum_jobs: 0
