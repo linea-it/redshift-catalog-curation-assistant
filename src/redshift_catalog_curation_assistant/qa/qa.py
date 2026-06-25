@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,15 @@ def dry_run_qa_config(config: dict[str, Any]) -> Path:
     return _output_notebook(validated)
 
 
+def run_qa_config(config: dict[str, Any]) -> dict[str, Path]:
+    """Generate configured QA artifacts and return their paths."""
+    output_notebook = generate_qa_notebook(config)
+    artifacts = {"notebook": output_notebook}
+    if config.get("generate_html", False):
+        artifacts["html"] = execute_qa_notebook_to_html(config, output_notebook)
+    return artifacts
+
+
 def generate_qa_notebook(config: dict[str, Any]) -> Path:
     """Generate a QA notebook from CONFIG and return the notebook path."""
     validated = _validate_qa_config(config)
@@ -42,6 +52,42 @@ def generate_qa_notebook(config: dict[str, Any]) -> Path:
         json.dump(notebook, handle, indent=2)
         handle.write("\n")
     return output_notebook
+
+
+def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | None = None) -> Path:
+    """Execute a generated QA notebook in memory and export the executed HTML."""
+    validated = _validate_qa_config(config)
+    _validate_notebook_runtime_paths(validated)
+
+    output_notebook = Path(notebook_path) if notebook_path is not None else _output_notebook(validated)
+    if not output_notebook.exists():
+        raise ValueError(f"Cannot generate QA HTML because notebook does not exist: {output_notebook}")
+
+    output_html = _output_html(validated)
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import nbformat
+        from nbclient import NotebookClient
+        from nbconvert import HTMLExporter
+    except ImportError as exc:  # pragma: no cover - dependency metadata should prevent this
+        raise ValueError(
+            "QA HTML generation requires nbformat, nbclient, and nbconvert. "
+            "Install the project with QA HTML dependencies enabled."
+        ) from exc
+
+    notebook = nbformat.read(output_notebook, as_version=4)
+    client = NotebookClient(
+        notebook,
+        timeout=validated.get("html_execution_timeout", 600),
+        kernel_name=validated.get("html_kernel_name", "python3"),
+        resources={"metadata": {"path": str(output_notebook.parent.resolve())}},
+    )
+    client.execute()
+
+    body, _ = HTMLExporter().from_notebook_node(notebook)
+    output_html.write_text(body, encoding="utf-8")
+    return output_html
 
 
 def _validate_qa_config(config: Any) -> dict[str, Any]:
@@ -75,6 +121,21 @@ def _validate_qa_config(config: Any) -> dict[str, Any]:
         config["include_absolute_input_path"], bool
     ):
         raise ValueError("include_absolute_input_path must be true or false.")
+    if "generate_html" in config and not isinstance(config["generate_html"], bool):
+        raise ValueError("generate_html must be true or false.")
+    output_html = config.get("output_html")
+    if output_html is not None and (not isinstance(output_html, str | Path) or not str(output_html).strip()):
+        raise ValueError("output_html must be a non-empty path string when provided.")
+    html_kernel_name = config.get("html_kernel_name")
+    if html_kernel_name is not None and (
+        not isinstance(html_kernel_name, str) or not html_kernel_name.strip()
+    ):
+        raise ValueError("html_kernel_name must be a non-empty string when provided.")
+    html_execution_timeout = config.get("html_execution_timeout")
+    if html_execution_timeout is not None and (
+        not isinstance(html_execution_timeout, int | float) or html_execution_timeout <= 0
+    ):
+        raise ValueError("html_execution_timeout must be a positive number when provided.")
 
     output_notebook = config.get("output_notebook")
     output_dir = config.get("output_dir")
@@ -205,6 +266,23 @@ def _output_notebook(config: dict[str, Any]) -> Path:
     return output_dir / "qa_notebook.ipynb"
 
 
+def _output_html(config: dict[str, Any]) -> Path:
+    if config.get("output_html"):
+        return Path(config["output_html"])
+    return _output_notebook(config).with_suffix(".html")
+
+
+def _validate_notebook_runtime_paths(config: dict[str, Any]) -> None:
+    input_file = Path(config["input_file"])
+    if not input_file.exists():
+        raise ValueError(f"Cannot generate QA HTML because input_file does not exist: {input_file}")
+
+    plots = config.get("plots") or {}
+    spatial = plots.get("spatial")
+    if spatial:
+        _validate_footprints(_configured_footprints(spatial))
+
+
 def _build_notebook(config: dict[str, Any]) -> dict[str, Any]:
     cells = [
         _markdown_cell(_header_source(config)),
@@ -252,6 +330,8 @@ def _build_notebook(config: dict[str, Any]) -> dict[str, Any]:
         ]
     )
     cells.extend(_plot_cells(config))
+    for index, cell in enumerate(cells):
+        cell.setdefault("id", f"qa-cell-{index:03d}")
 
     return {
         "cells": cells,
@@ -315,12 +395,19 @@ def _imports_source(config: dict[str, Any]) -> str:
         "# General",
         "import numpy as np",
         "import pandas as pd",
-        "import matplotlib.pyplot as plt",
-        "from matplotlib.colors import LogNorm",
-        "import seaborn as sns",
         "from IPython.display import display, Markdown",
         "",
     ]
+    plots = config.get("plots") or {}
+    has_plotting = any(plots.get(key) for key in ("spatial", "redshift", "quality", "redshift_error"))
+    if has_plotting:
+        imports.extend(["# Plotting", "import matplotlib.pyplot as plt"])
+    if plots.get("spatial"):
+        imports.append("from matplotlib.colors import LogNorm")
+    if any(plots.get(key) for key in ("redshift", "quality", "redshift_error")):
+        imports.append("import seaborn as sns")
+    if has_plotting:
+        imports.append("")
     if str(config.get("input_format", "parquet")).lower() == "hats":
         imports.extend(["# HATS", "import lsdb"])
     return "\n".join(imports)
@@ -348,7 +435,8 @@ def _notebook_path(config: dict[str, Any], path: str | Path) -> str:
     input_file = Path(path)
     if config.get("include_absolute_input_path", True):
         return str(input_file.resolve())
-    return input_file.name
+    notebook_dir = _output_notebook(config).parent
+    return os.path.relpath(input_file.resolve(), notebook_dir.resolve())
 
 
 def _plot_cells(config: dict[str, Any]) -> list[dict[str, Any]]:

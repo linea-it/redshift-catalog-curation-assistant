@@ -1,9 +1,11 @@
 title: C3R2 DR3
 subtitle: Basic dataset characterization
 output_notebook: reports/qa/c3r2_dr3.ipynb
+generate_html: true
+output_html: reports/qa/c3r2_dr3.html
 input_file: tests/data/curated/c3r2_dr3.parquet
 input_format: parquet
-include_absolute_input_path: true
+include_absolute_input_path: false
 
 header_images:
   - url: https://www.linea.org.br/brand/linea-logo-color.svg

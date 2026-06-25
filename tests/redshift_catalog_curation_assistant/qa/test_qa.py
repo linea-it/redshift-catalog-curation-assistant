@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from redshift_catalog_curation_assistant.qa import dry_run_qa_config, generate_qa_notebook
+from redshift_catalog_curation_assistant.qa import dry_run_qa_config, generate_qa_notebook, run_qa_config
 
 
 def test_generate_qa_notebook_reads_local_parquet_and_uses_configured_header_images(tmp_path):
@@ -106,14 +106,15 @@ def test_generate_qa_notebook_supports_hats_input(tmp_path):
     assert any("curated/hats_catalog" in source for source in sources)
 
 
-def test_generate_qa_notebook_can_use_input_basename(tmp_path):
+def test_generate_qa_notebook_can_use_relative_input_path(tmp_path):
     """Ensure users can opt out of absolute input paths in generated read cells."""
-    output_notebook = tmp_path / "qa.ipynb"
+    output_notebook = tmp_path / "reports" / "qa.ipynb"
+    input_file = tmp_path / "curated" / "c3r2_dr3.parquet"
 
     generate_qa_notebook(
         {
             "title": "Relative QA",
-            "input_file": "curated/c3r2_dr3.parquet",
+            "input_file": str(input_file),
             "include_absolute_input_path": False,
             "output_notebook": str(output_notebook),
         }
@@ -122,7 +123,7 @@ def test_generate_qa_notebook_can_use_input_basename(tmp_path):
     notebook = json.loads(output_notebook.read_text())
     sources = ["".join(cell["source"]) for cell in notebook["cells"]]
 
-    assert "df = pd.read_parquet('c3r2_dr3.parquet')" in sources
+    assert "df = pd.read_parquet('../curated/c3r2_dr3.parquet')" in sources
 
 
 def test_generate_qa_notebook_supports_multiple_spatial_footprints(tmp_path):
@@ -199,11 +200,12 @@ def test_generate_qa_notebook_can_use_footprint_basenames(tmp_path):
         )
     )
     output_notebook = tmp_path / "qa.ipynb"
+    input_file = tmp_path / "catalog.parquet"
 
     generate_qa_notebook(
         {
             "title": "Footprint QA",
-            "input_file": "curated/catalog.parquet",
+            "input_file": str(input_file),
             "include_absolute_input_path": False,
             "output_notebook": str(output_notebook),
             "plots": {
@@ -226,6 +228,73 @@ def test_generate_qa_notebook_can_use_footprint_basenames(tmp_path):
     assert "df = pd.read_parquet('catalog.parquet')" in sources
     assert "footprint_0 = pd.read_csv('footprint.csv')" in sources
     assert str(footprint.resolve()) not in sources
+
+
+def test_run_qa_config_can_execute_notebook_and_export_html(tmp_path, monkeypatch):
+    """Ensure optional HTML generation executes a copy and leaves the source notebook blank."""
+    import nbclient
+    import nbconvert
+
+    class FakeNotebookClient:
+        def __init__(self, notebook, timeout, kernel_name, resources):
+            self.notebook = notebook
+            self.timeout = timeout
+            self.kernel_name = kernel_name
+            self.resources = resources
+
+        def execute(self):
+            self.notebook["cells"][0]["source"] = ["# Executed QA\n"]
+
+    class FakeHTMLExporter:
+        def from_notebook_node(self, notebook):
+            return "".join(notebook["cells"][0]["source"]), {}
+
+    monkeypatch.setattr(nbclient, "NotebookClient", FakeNotebookClient)
+    monkeypatch.setattr(nbconvert, "HTMLExporter", FakeHTMLExporter)
+
+    input_file = tmp_path / "catalog.csv"
+    input_file.write_text("ra,dec,z\n10.0,-1.0,0.1\n11.0,-1.5,0.2\n")
+    output_notebook = tmp_path / "reports" / "qa.ipynb"
+
+    artifacts = run_qa_config(
+        {
+            "title": "Executed QA",
+            "input_file": str(input_file),
+            "input_format": "csv",
+            "include_absolute_input_path": False,
+            "output_notebook": str(output_notebook),
+            "generate_html": True,
+            "html_execution_timeout": 120,
+        }
+    )
+
+    assert artifacts == {
+        "notebook": output_notebook,
+        "html": output_notebook.with_suffix(".html"),
+    }
+    assert artifacts["html"].exists()
+    assert "Executed QA" in artifacts["html"].read_text(encoding="utf-8")
+
+    notebook = json.loads(output_notebook.read_text())
+    code_cells = [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]
+    assert all(cell["execution_count"] is None for cell in code_cells)
+    assert all(cell["outputs"] == [] for cell in code_cells)
+
+
+def test_qa_html_generation_rejects_missing_input_file(tmp_path):
+    """Ensure optional execution fails before starting when notebook paths are invalid."""
+    missing_input = tmp_path / "missing.csv"
+
+    with pytest.raises(ValueError, match="input_file does not exist"):
+        run_qa_config(
+            {
+                "title": "Missing Input QA",
+                "input_file": str(missing_input),
+                "input_format": "csv",
+                "output_notebook": str(tmp_path / "qa.ipynb"),
+                "generate_html": True,
+            }
+        )
 
 
 def test_qa_config_rejects_unsupported_footprint_columns(tmp_path):

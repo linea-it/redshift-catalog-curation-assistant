@@ -502,11 +502,19 @@ def qa(config, dry_run):
         if dry_run:
             output_notebook = rc_qa.dry_run_qa_config(cfg)
             click.echo(f"QA dry-run OK; notebook would be written to {output_notebook}")
+            if cfg.get("generate_html", False):
+                if cfg.get("output_html"):
+                    output_html = Path(cfg["output_html"])
+                else:
+                    output_html = output_notebook.with_suffix(".html")
+                click.echo(f"QA dry-run OK; HTML would be written to {output_html}")
             return
-        output_notebook = rc_qa.generate_qa_notebook(cfg)
+        artifacts = rc_qa.run_qa_config(cfg)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"QA notebook written to {output_notebook}")
+    click.echo(f"QA notebook written to {artifacts['notebook']}")
+    if "html" in artifacts:
+        click.echo(f"QA HTML written to {artifacts['html']}")
 
 
 @cli.command("validate-flags")

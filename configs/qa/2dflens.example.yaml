@@ -1,9 +1,11 @@
 title: 2dFLenS Final Data Release
 subtitle: Basic dataset characterization
 output_notebook: reports/qa/2dflens.ipynb
+generate_html: true
+output_html: reports/qa/2dflens.html
 input_file: tests/data/curated/2dflens.parquet
 input_format: parquet
-include_absolute_input_path: true
+include_absolute_input_path: false
 
 header_images:
   - url: https://www.linea.org.br/brand/linea-logo-color.svg
