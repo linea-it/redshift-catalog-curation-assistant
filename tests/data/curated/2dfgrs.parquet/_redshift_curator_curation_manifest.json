@@ -1,0 +1,95 @@
+{
+  "source_paths": [
+    "tests/data/prepared/2dfgrs.parquet"
+  ],
+  "partition_format": "parquet",
+  "output_mode": "single",
+  "n_partitions": 1,
+  "columns": [
+    "serial",
+    "spectra",
+    "name",
+    "UKST",
+    "ra_b1950_h",
+    "ra_b1950_m",
+    "ra_b1950_s",
+    "dec_b1950_d",
+    "dec_b1950_m",
+    "dec_b1950_s",
+    "ra_j2000_h",
+    "ra_j2000_m",
+    "ra_j2000_s",
+    "dec_j2000_d",
+    "dec_j2000_m",
+    "dec_j2000_s",
+    "BJG",
+    "BJSEL",
+    "BJG_OLD",
+    "BJSELOLD",
+    "GALEXT",
+    "SB_BJ",
+    "SR_R",
+    "z",
+    "z_helio",
+    "obsrun",
+    "quality",
+    "abemma",
+    "Z_ABS",
+    "KBESTR",
+    "R_CRCOR",
+    "Z_EMI",
+    "NMBEST",
+    "SNR",
+    "ETA_TYPE",
+    "ra_b1950_deg",
+    "dec_b1950_deg",
+    "ra_j2000_deg",
+    "dec_j2000_deg",
+    "survey_name"
+  ],
+  "coordinates": {
+    "ra_column": "ra_j2000_deg",
+    "dec_column": "dec_j2000_deg"
+  },
+  "redshift": {
+    "column": "z",
+    "invalid_policy": "keep"
+  },
+  "transformations": [
+    {
+      "type": "ra_hms_to_degrees",
+      "output_column": "ra_b1950_deg",
+      "hours": "ra_b1950_h",
+      "minutes": "ra_b1950_m",
+      "seconds": "ra_b1950_s"
+    },
+    {
+      "type": "dec_dms_to_degrees",
+      "output_column": "dec_b1950_deg",
+      "degrees": "dec_b1950_d",
+      "arcminutes": "dec_b1950_m",
+      "arcseconds": "dec_b1950_s"
+    },
+    {
+      "type": "ra_hms_to_degrees",
+      "output_column": "ra_j2000_deg",
+      "hours": "ra_j2000_h",
+      "minutes": "ra_j2000_m",
+      "seconds": "ra_j2000_s"
+    },
+    {
+      "type": "dec_dms_to_degrees",
+      "output_column": "dec_j2000_deg",
+      "degrees": "dec_j2000_d",
+      "arcminutes": "dec_j2000_m",
+      "arcseconds": "dec_j2000_s"
+    },
+    {
+      "type": "add_constant_column",
+      "name": "survey_name",
+      "value": "2DFGRS"
+    }
+  ],
+  "large_file_threshold_mb": 100.0,
+  "target_partition_size_mb": 100.0
+}

@@ -43,10 +43,13 @@ LOGGER = logging.getLogger(__name__)
 GENERATED_COLUMNS_POSITION = {"first", "last"}
 SUPPORTED_TRANSFORMATION_TYPES = {
     "add_constant_column",
+    "absolute_value",
     "cast",
     "coalesce_redshift",
     "dec_dms_to_degrees",
     "ra_hms_to_degrees",
+    "replace_values",
+    "signed_value_sign",
     "skycoord_to_degrees",
     "velocity_to_redshift",
 }
@@ -328,6 +331,33 @@ def _validate_cast(transformation: dict[str, Any]) -> None:
     _require_string(transformation, "cast", "dtype")
 
 
+def _validate_absolute_value(transformation: dict[str, Any]) -> None:
+    _require_string(transformation, "absolute_value", "input_column")
+    _require_string(transformation, "absolute_value", "output_column")
+    dtype = transformation.get("dtype")
+    if dtype is not None and (not isinstance(dtype, str) or not dtype.strip()):
+        raise CurateError("absolute_value transformations require dtype to be a non-empty string.")
+
+
+def _validate_signed_value_sign(transformation: dict[str, Any]) -> None:
+    _require_string(transformation, "signed_value_sign", "input_column")
+    _require_string(transformation, "signed_value_sign", "output_column")
+
+
+def _validate_replace_values(transformation: dict[str, Any]) -> None:
+    _require_string(transformation, "replace_values", "column")
+    replacements = transformation.get("replacements")
+    if not isinstance(replacements, list | tuple) or not replacements:
+        raise CurateError("replace_values transformations require replacements to be a non-empty list.")
+    for index, replacement in enumerate(replacements):
+        if not isinstance(replacement, dict):
+            raise CurateError(f"replace_values replacements[{index}] must be a mapping.")
+        if "from" not in replacement:
+            raise CurateError(f"replace_values replacements[{index}] requires from.")
+        if "to" not in replacement:
+            raise CurateError(f"replace_values replacements[{index}] requires to.")
+
+
 def _validate_ra_hms_to_degrees(transformation: dict[str, Any]) -> None:
     for key in ["output_column", "hours", "minutes", "seconds"]:
         _require_string(transformation, "ra_hms_to_degrees", key)
@@ -404,11 +434,14 @@ def _validate_skycoord_to_degrees(transformation: dict[str, Any]) -> None:
 
 
 TRANSFORMATION_CONFIG_VALIDATORS = {
+    "absolute_value": _validate_absolute_value,
     "add_constant_column": _validate_add_constant_column,
     "cast": _validate_cast,
     "coalesce_redshift": _validate_coalesce_redshift,
     "dec_dms_to_degrees": _validate_dec_dms_to_degrees,
     "ra_hms_to_degrees": _validate_ra_hms_to_degrees,
+    "replace_values": _validate_replace_values,
+    "signed_value_sign": _validate_signed_value_sign,
     "skycoord_to_degrees": _validate_skycoord_to_degrees,
     "velocity_to_redshift": _validate_velocity_to_redshift,
 }
@@ -576,6 +609,10 @@ def _transformation_generated_columns(transformation: dict[str, Any]) -> list[st
     transform_type = transformation.get("type")
     if transform_type == "add_constant_column":
         return [transformation["name"]] if isinstance(transformation.get("name"), str) else []
+    if transform_type in {"absolute_value", "signed_value_sign"}:
+        if isinstance(transformation.get("output_column"), str):
+            return [transformation["output_column"]]
+        return []
     if transform_type in {"ra_hms_to_degrees", "dec_dms_to_degrees"}:
         if isinstance(transformation.get("output_column"), str):
             return [transformation["output_column"]]
@@ -610,6 +647,10 @@ def _transformation_generated_columns(transformation: dict[str, Any]) -> list[st
 def _transformation_required_columns(transformation: dict[str, Any]) -> list[str]:
     transform_type = transformation.get("type")
     if transform_type == "cast":
+        return [transformation["column"]] if isinstance(transformation.get("column"), str) else []
+    if transform_type in {"absolute_value", "signed_value_sign"}:
+        return [transformation["input_column"]] if isinstance(transformation.get("input_column"), str) else []
+    if transform_type == "replace_values":
         return [transformation["column"]] if isinstance(transformation.get("column"), str) else []
     if transform_type == "ra_hms_to_degrees":
         return [
@@ -724,6 +765,8 @@ def _read_small_table(path: Path, config: dict[str, Any], columns: list[str] | N
     try:
         if path.is_dir() or suffix in PARQUET_SUFFIXES:
             return pd.read_parquet(path, columns=columns)
+        if suffix == ".txt" and config.get("column_names"):
+            return _read_headerless_table(path, config, columns)
         if suffix in {".csv", ".txt"}:
             return pd.read_csv(path, usecols=columns)
         if suffix in {".dat", ".idz"}:
@@ -838,6 +881,49 @@ def _add_constant_column(df: Any, transformation: dict[str, Any]) -> tuple[Any, 
     else:
         df[name] = value
     return df, [name]
+
+
+def _absolute_value(df: Any, transformation: dict[str, Any]) -> tuple[Any, list[str]]:
+    input_column = transformation.get("input_column")
+    output_column = transformation.get("output_column")
+    dtype = transformation.get("dtype")
+    if not isinstance(input_column, str) or not isinstance(output_column, str):
+        raise CurateError("absolute_value transformations require input_column and output_column strings.")
+    _ensure_columns(df, [input_column], "absolute_value")
+    values = df[input_column].abs()
+    if dtype is not None:
+        if not isinstance(dtype, str):
+            raise CurateError("absolute_value dtype must be a string.")
+        values = values.astype(dtype)
+    df[output_column] = values
+    return df, [output_column]
+
+
+def _signed_value_sign(df: Any, transformation: dict[str, Any]) -> tuple[Any, list[str]]:
+    input_column = transformation.get("input_column")
+    output_column = transformation.get("output_column")
+    negative_label = transformation.get("negative_label", "-")
+    non_negative_label = transformation.get("non_negative_label", "+")
+    if not isinstance(input_column, str) or not isinstance(output_column, str):
+        raise CurateError("signed_value_sign transformations require input_column and output_column strings.")
+    if not isinstance(negative_label, str) or not isinstance(non_negative_label, str):
+        raise CurateError("signed_value_sign labels must be strings.")
+    _ensure_columns(df, [input_column], "signed_value_sign")
+    df[output_column] = np.where(df[input_column] < 0, negative_label, non_negative_label)
+    return df, [output_column]
+
+
+def _replace_values(df: Any, transformation: dict[str, Any]) -> tuple[Any, list[str]]:
+    column = transformation.get("column")
+    replacements = transformation.get("replacements")
+    if not isinstance(column, str):
+        raise CurateError("replace_values transformations require column to be a string.")
+    if not isinstance(replacements, list | tuple):
+        raise CurateError("replace_values transformations require replacements to be a list.")
+    _ensure_columns(df, [column], "replace_values")
+    replace_map = {replacement["from"]: replacement["to"] for replacement in replacements}
+    df[column] = df[column].replace(replace_map)
+    return df, []
 
 
 def _ra_hms_to_degrees(df: Any, transformation: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -1011,10 +1097,13 @@ def _skycoord_to_degrees(df: Any, transformation: dict[str, Any]) -> tuple[Any, 
 
 
 TRANSFORMATIONS = {
+    "absolute_value": _absolute_value,
     "add_constant_column": _add_constant_column,
     "cast": _cast_column,
     "ra_hms_to_degrees": _ra_hms_to_degrees,
     "dec_dms_to_degrees": _dec_dms_to_degrees,
+    "replace_values": _replace_values,
+    "signed_value_sign": _signed_value_sign,
     "velocity_to_redshift": _velocity_to_redshift,
     "coalesce_redshift": _coalesce_redshift,
     "skycoord_to_degrees": _skycoord_to_degrees,

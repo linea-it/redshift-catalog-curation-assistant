@@ -8,6 +8,7 @@ from .. import curate as rc_curate
 from .. import fits as rc_fits
 from .. import inspect as rc_inspect
 from .. import prepare as rc_prepare
+from .. import qa as rc_qa
 from ..logging_utils import configure_logging
 
 
@@ -489,9 +490,23 @@ def curate(config, dry_run):
 
 @cli.command()
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
-def qa(config):
-    """Run quality-assurance checks using CONFIG YAML."""
-    _planned_command("qa", config)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate config without writing the QA notebook.",
+)
+def qa(config, dry_run):
+    """Generate a quality-assurance notebook using CONFIG YAML."""
+    try:
+        cfg = rc_qa.load_qa_config(Path(config))
+        if dry_run:
+            output_notebook = rc_qa.dry_run_qa_config(cfg)
+            click.echo(f"QA dry-run OK; notebook would be written to {output_notebook}")
+            return
+        output_notebook = rc_qa.generate_qa_notebook(cfg)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"QA notebook written to {output_notebook}")
 
 
 @cli.command("validate-flags")

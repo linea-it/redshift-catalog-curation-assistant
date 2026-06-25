@@ -86,7 +86,7 @@ def read_table(
     suffix = data_suffixes[-1] if data_suffixes else path.suffix.lower()
     use_dask = suffix != ".fits" and _should_use_dask(path, dask_threshold_bytes)
 
-    if suffix in HEADERLESS_SUFFIXES:
+    if suffix in HEADERLESS_SUFFIXES or (suffix == ".txt" and column_names):
         return _read_headerless_table(path, column_names=column_names, use_dask=use_dask)
     if suffix in [".csv", ".txt"]:
         if use_dask:

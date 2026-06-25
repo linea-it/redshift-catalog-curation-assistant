@@ -72,6 +72,11 @@ Detailed documentation lives in `docs/`:
 - `docs/large-data.rst`
 - `docs/sample-data.md`
 
+Acknowledgements for public data, images, footprint curves, and other external
+materials used or referenced by test fixtures and examples are maintained in
+`tests/data/acknowledgements.md`. Keep this file updated when adding or changing
+data assets.
+
 ## Development
 
 ```bash

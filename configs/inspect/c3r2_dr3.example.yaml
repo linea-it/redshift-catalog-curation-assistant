@@ -1,0 +1,29 @@
+input_file: tests/data/raw/C3R2-DR3-18june2021.txt
+survey_name: C3R2_DR3
+unique_limit: 10
+
+column_names:
+  - ID
+  - RAh
+  - RAm
+  - RAs
+  - DEd_raw
+  - DEm
+  - DEs
+  - Mask
+  - Slit
+  - imag
+  - zspec
+  - Qual
+  - Instrument
+  - spec1dfile
+
+column_patterns:
+  redshift:
+    - "^zspec$"
+  quality:
+    - "^Qual$"
+  id:
+    - "^ID$"
+  object_type:
+    - "^Instrument$"

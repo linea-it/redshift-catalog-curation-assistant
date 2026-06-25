@@ -127,8 +127,8 @@ SLURM Example
          cores: 4
          processes: 1
          memory: 16GB
-         queue: cpu
-         account: my-account
+         queue: your-queue
+         account: your-account
        scale:
          minimum_jobs: 1
          maximum_jobs: 4

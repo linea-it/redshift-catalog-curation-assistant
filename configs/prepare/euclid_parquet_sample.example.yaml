@@ -24,8 +24,8 @@ dask_cluster:
 #      processes: 1
 #      memory: 16GB
 #      walltime: "01:00:00"
-#      queue: cpu
-#      account: hpc-public
+#      queue: your-queue
+#      account: your-account
 #      interface: ib0
 #    scale:
 #      minimum_jobs: 4

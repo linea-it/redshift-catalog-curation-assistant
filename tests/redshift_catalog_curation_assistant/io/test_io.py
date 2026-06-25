@@ -38,6 +38,17 @@ def test_headerless_file_uses_column_names(tmp_path):
     assert len(df) == 2
 
 
+def test_headerless_txt_uses_column_names(tmp_path):
+    """Ensure whitespace .txt files can be treated as headerless with explicit names."""
+    path = tmp_path / "sample.txt"
+    path.write_text("# comment\nOBJ1 10.0 -1.0 0.2\nOBJ2 11.0 -1.1 0.3\n")
+
+    df = read_table(path, column_names=["object_id", "ra", "dec", "z"])
+
+    assert list(df.columns) == ["object_id", "ra", "dec", "z"]
+    assert len(df) == 2
+
+
 def test_column_names_are_ignored_for_headered_csv(tmp_path):
     """Ensure explicit names do not override files that already carry headers."""
     path = tmp_path / "sample.csv"

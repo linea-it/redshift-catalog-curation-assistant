@@ -72,6 +72,19 @@ def test_curate_rejects_invalid_config_fields(update, message):
         ({"type": "cast", "column": "quality"}, "cast transformations require dtype"),
         ({"type": "add_constant_column", "name": ""}, "add_constant_column transformations require name"),
         (
+            {"type": "absolute_value", "input_column": "x"},
+            "absolute_value transformations require output_column",
+        ),
+        (
+            {"type": "signed_value_sign", "input_column": "x"},
+            "signed_value_sign transformations require output_column",
+        ),
+        ({"type": "replace_values", "column": "x"}, "replace_values transformations require replacements"),
+        (
+            {"type": "replace_values", "column": "x", "replacements": [{"to": None}]},
+            "replace_values replacements\\[0\\] requires from",
+        ),
+        (
             {"type": "ra_hms_to_degrees", "output_column": "ra"},
             "ra_hms_to_degrees transformations require hours",
         ),
@@ -172,6 +185,92 @@ def test_curate_small_csv_selects_casts_adds_constant_and_writes_single_parquet(
     manifest = json.loads((output_dir / "_redshift_curator_curation_manifest.json").read_text())
     assert manifest["output_mode"] == "single"
     assert manifest["columns"] == df.columns.tolist()
+
+
+def test_curate_small_csv_can_derive_sign_abs_and_replace_sentinels(tmp_path):
+    """Verify generic transforms cover signed components and sentinel cleanup."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,ra,dec_raw,dec_min,dec_sec,z,imag,file\n1,10.0,-4,47,41.6,0.1,-1,-1\n")
+    output_dir = tmp_path / "curated"
+
+    curate_catalog(
+        {
+            "input_file": str(csv),
+            "output_dir": str(output_dir),
+            "overwrite": True,
+            "column_selection": [
+                "object_id",
+                "ra",
+                "dec_sign",
+                "dec_degree",
+                "dec_min",
+                "dec_sec",
+                "dec",
+                "z",
+                "imag",
+                "file",
+            ],
+            "coordinates": {
+                "ra_column": "ra",
+                "dec_column": "dec",
+            },
+            "redshift": {
+                "column": "z",
+            },
+            "transformations": [
+                {
+                    "type": "signed_value_sign",
+                    "input_column": "dec_raw",
+                    "output_column": "dec_sign",
+                },
+                {
+                    "type": "absolute_value",
+                    "input_column": "dec_raw",
+                    "output_column": "dec_degree",
+                    "dtype": "int64",
+                },
+                {
+                    "type": "dec_dms_to_degrees",
+                    "output_column": "dec",
+                    "degrees": "dec_raw",
+                    "arcminutes": "dec_min",
+                    "arcseconds": "dec_sec",
+                },
+                {
+                    "type": "replace_values",
+                    "column": "imag",
+                    "replacements": [
+                        {
+                            "from": -1,
+                            "to": None,
+                        }
+                    ],
+                },
+                {
+                    "type": "replace_values",
+                    "column": "file",
+                    "replacements": [
+                        {
+                            "from": -1,
+                            "to": None,
+                        },
+                        {
+                            "from": "-1",
+                            "to": None,
+                        },
+                    ],
+                },
+            ],
+        }
+    )
+
+    df = pd.read_parquet(next(output_dir.glob("*.parquet")))
+
+    assert df["dec_sign"].tolist() == ["-"]
+    assert df["dec_degree"].tolist() == [4]
+    assert df["dec"].iloc[0] == pytest.approx(-4.794888888888889)
+    assert pd.isna(df["imag"].iloc[0])
+    assert pd.isna(df["file"].iloc[0])
 
 
 def test_curate_small_csv_can_write_hats_collection(tmp_path):

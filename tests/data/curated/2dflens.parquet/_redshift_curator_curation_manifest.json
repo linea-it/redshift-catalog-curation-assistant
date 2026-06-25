@@ -1,0 +1,39 @@
+{
+  "source_paths": [
+    "tests/data/prepared/2dflens.parquet"
+  ],
+  "partition_format": "parquet",
+  "output_mode": "single",
+  "n_partitions": 1,
+  "columns": [
+    "RA",
+    "Dec",
+    "z",
+    "qual",
+    "target",
+    "umag",
+    "gmag",
+    "rmag",
+    "imag",
+    "zmag",
+    "w1mag",
+    "survey_name"
+  ],
+  "coordinates": {
+    "ra_column": "RA",
+    "dec_column": "Dec"
+  },
+  "redshift": {
+    "column": "z",
+    "invalid_policy": "keep"
+  },
+  "transformations": [
+    {
+      "type": "add_constant_column",
+      "name": "survey_name",
+      "value": "2DFLENS"
+    }
+  ],
+  "large_file_threshold_mb": 100.0,
+  "target_partition_size_mb": 100.0
+}

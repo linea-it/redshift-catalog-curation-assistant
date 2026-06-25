@@ -1,0 +1,52 @@
+title: 2dFGRS Final Data Release
+subtitle: Basic dataset characterization
+output_notebook: reports/qa/2dfgrs.ipynb
+input_file: tests/data/curated/2dfgrs.parquet
+input_format: parquet
+include_absolute_input_path: true
+
+header_images:
+  - url: https://www.linea.org.br/brand/linea-logo-color.svg
+    width: 100
+    style: "padding: 40px"
+  - url: https://cdn2.webdamdb.com/1280_c3PXjCZbPM23.png
+    width: 180
+
+summary:
+  - "**Original file:** `best.observations.idz`"
+  - "**Data obtained from:** http://www.2dfgrs.net/Public/Release/SpecCat/speccat.html"
+  - "**Schema:** http://www.2dfgrs.net/Public/Release/SpecCat/speccat.html"
+  - "**Reference paper:** https://articles.adsabs.harvard.edu/pdf/2001MNRAS.328.1039C"
+  - "**Manipulations:** Inserting RA and Dec columns in degrees. Inserting survey_name column."
+
+acknowledgments:
+  - This notebook was supported by resources supplied by the Laboratório Interinstitucional de e-Astronomia (LIneA).
+  - We acknowledge the use of the 2dFGRS Final Data Release - Best Observations catalog. The 2dF Galaxy Redshift Survey was made possible through the dedicated efforts of the staff of the Anglo-Australian Observatory, both in creating the 2dF instrument and in supporting the survey observations.
+
+plots:
+  spatial:
+    ra_column: ra_j2000_deg
+    dec_column: dec_j2000_deg
+    footprints:
+      - path: tests/data/curves/rubin_dp2_footprint.csv
+        label: Rubin DP2 footprint
+        color: red
+      - path: tests/data/curves/rubin_footprint.csv
+        label: Rubin footprint
+        color: orange
+  redshift:
+    column: z
+    range: [-0.1, 0.4]
+    bins: 50
+  quality:
+    column: quality
+    description: |
+      | Q | Description |
+      |---|---|
+      | 1 | No redshift could be estimated |
+      | 2 | Possible, but doubtful, redshift estimate |
+      | 3 | Probable redshift, notionally 90 per cent confidence |
+      | 4 | Reliable redshift, notionally 99 per cent confidence |
+      | 5 | Reliable redshift and a high-quality spectrum |
+
+      **Source**: https://articles.adsabs.harvard.edu/pdf/2001MNRAS.328.1039C
