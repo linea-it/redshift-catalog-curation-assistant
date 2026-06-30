@@ -25,6 +25,11 @@ This work uses data from the C3R2 Survey. We acknowledge the C3R2 collaboration
 and cite Masters et al. (2017), Masters et al. (2019), and Stanford et al.
 (2021).
 
+### 2MRS V240
+
+This work uses data products produced by the OIR Telescope Data Center,
+supported by the Smithsonian Astrophysical Observatory.
+
 ## Footprint Curves
 
 ### Rubin Observatory and LSST

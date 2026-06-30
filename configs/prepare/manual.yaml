@@ -8,6 +8,10 @@ input_files:
   - path/to/catalog_part0.fits
   - path/to/catalog_part1.fits
 
+# Multi-file schema policy: strict (default) or union.
+# Union preserves first-seen column order and fills missing columns with nulls.
+schema_policy: strict
+
 # Output Parquet dataset or HATS collection directory.
 output_dir: reports/prepared/example.parquet
 

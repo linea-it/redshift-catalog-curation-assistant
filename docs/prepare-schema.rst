@@ -43,7 +43,8 @@ Input Options
 ``schema_policy``
   Controls multi-file schema handling. ``strict`` is the default and rejects
   mismatches. ``union`` keeps columns in first-seen order and fills columns
-  missing from an input with null values.
+  missing from an input with null values. Adding nulls can promote integer
+  columns to nullable or floating-point representations in the Parquet output.
 
 ``large_file_threshold_mb``
   Defaults to ``100``. Small single-file inputs below the threshold are read in
@@ -208,3 +209,18 @@ Prepare several files as one logical catalog:
    schema_policy: union
    overwrite: true
    output_mode: auto
+
+The versioned 2MRS example demonstrates two FITS inputs whose schemas differ by
+three optional columns:
+
+.. code-block:: console
+
+   redshift-curator prepare configs/prepare/2mrs.example.yaml
+   redshift-curator inspect configs/inspect/2mrs.example.yaml
+   redshift-curator curate configs/curate/2mrs.example.yaml
+   redshift-curator qa configs/qa/2mrs.example.yaml
+
+It uses ``schema_policy: union`` so ``DELRA``, ``DELDC``, and ``MCHTOL`` are
+present in the combined dataset and null for rows from the input that does not
+define them. The curated output retains the unioned source columns and adds
+``redshift``, ``redshift_err``, and ``survey_name``.
