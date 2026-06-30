@@ -401,6 +401,72 @@ def test_prepare_multi_file_rejects_schema_mismatch(tmp_path):
         )
 
 
+def test_prepare_multi_file_can_union_schema(tmp_path, monkeypatch):
+    """Ensure optional columns can be unioned across one logical catalog."""
+    import redshift_catalog_curation_assistant.prepare.prepare as prep
+
+    first = tmp_path / "part1.csv"
+    second = tmp_path / "part2.csv"
+    first.write_text("object_id,z\n1,0.1\n")
+    second.write_text("object_id,z,quality\n2,0.2,3\n")
+    output_dir = tmp_path / "prepared"
+    monkeypatch.setattr(prep, "dask_client_context", fake_dask_client_context)
+
+    prepare_catalog(
+        {
+            "input_files": [str(first), str(second)],
+            "output_dir": str(output_dir),
+            "schema_policy": "union",
+            "large_file_threshold_mb": 1,
+            "dask_cluster": {"name": "local", "args": {"processes": False}},
+        }
+    )
+
+    result = pd.read_parquet(output_dir).sort_values("object_id").reset_index(drop=True)
+    assert list(result.columns) == ["object_id", "z", "quality"]
+    assert pd.isna(result.loc[0, "quality"])
+    assert result.loc[1, "quality"] == 3
+
+
+def test_prepare_small_multi_file_can_write_single_union(tmp_path):
+    """Ensure small multi-file catalogs can avoid a distributed executor."""
+    first = tmp_path / "part1.csv"
+    second = tmp_path / "part2.csv"
+    first.write_text("object_id,z\n1,0.1\n")
+    second.write_text("object_id,z,quality\n2,0.2,3\n")
+    output_dir = tmp_path / "prepared"
+
+    prepare_catalog(
+        {
+            "input_files": [str(first), str(second)],
+            "output_dir": str(output_dir),
+            "schema_policy": "union",
+            "output_mode": "single",
+            "allow_large_single_output": True,
+            "part_prefix": "catalog",
+        }
+    )
+
+    result = pd.read_parquet(output_dir / "catalog-part0.parquet")
+    assert result.shape == (2, 3)
+    assert pd.isna(result.loc[0, "quality"])
+
+
+def test_prepare_rejects_unknown_schema_policy(tmp_path):
+    """Ensure schema union behavior must be selected explicitly."""
+    csv = tmp_path / "sample.csv"
+    csv.write_text("object_id,z\n1,0.1\n")
+
+    with pytest.raises(PrepareError, match="schema_policy"):
+        prepare_catalog(
+            {
+                "input_file": str(csv),
+                "output_dir": str(tmp_path / "prepared"),
+                "schema_policy": "permissive",
+            }
+        )
+
+
 def test_prepare_slurm_defaults_logs_to_output_logs_dir(tmp_path, monkeypatch):
     """Ensure SLURM prepare logs live next to the prepared dataset by default."""
     import redshift_catalog_curation_assistant.prepare.prepare as prep
@@ -694,6 +760,22 @@ def test_prepare_fits_chunk_size_is_capped_by_target_partition_size():
     )
 
     assert chunk_size == 30_375
+
+
+def test_prepare_2mrs_fits_union_preserves_optional_columns(tmp_path):
+    """Ensure the two 2MRS FITS schemas produce one unioned catalog."""
+    config = yaml.safe_load(Path("configs/prepare/2mrs.example.yaml").read_text())
+    config["output_dir"] = str(tmp_path / "2mrs")
+
+    output_dir = prepare_catalog(config)
+    result = pd.read_parquet(output_dir)
+
+    assert result.shape == (2000, 32)
+    assert result[["DELRA", "DELDC", "MCHTOL"]].isna().sum().to_dict() == {
+        "DELRA": 1000,
+        "DELDC": 1000,
+        "MCHTOL": 1000,
+    }
 
 
 @pytest.mark.parametrize(

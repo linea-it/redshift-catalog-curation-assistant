@@ -1382,15 +1382,14 @@ def test_curate_multi_file_rejects_schema_mismatch(tmp_path):
 
 
 def test_curate_2mrs_velocity_fixture(tmp_path):
-    """Verify 2MRS velocity conversion on the versioned FITS sample."""
-    path = Path("tests/data/raw/2mrs_sample.fits")
+    """Verify 2MRS velocity conversion on the prepared multi-file sample."""
+    path = Path("tests/data/prepared/2mrs.parquet")
     output_dir = tmp_path / "curated"
     curate_catalog(
         {
             "input_file": str(path),
             "output_dir": str(output_dir),
             "overwrite": True,
-            "column_selection": ["RA", "DEC", "redshift", "redshift_err"],
             "coordinates": {
                 "ra_column": "RA",
                 "dec_column": "DEC",
@@ -1412,6 +1411,12 @@ def test_curate_2mrs_velocity_fixture(tmp_path):
 
     df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
     assert {"redshift", "redshift_err"}.issubset(df.columns)
+    assert len(df) == 2000
+    assert df[["DELRA", "DELDC", "MCHTOL"]].isna().sum().to_dict() == {
+        "DELRA": 1000,
+        "DELDC": 1000,
+        "MCHTOL": 1000,
+    }
 
 
 @pytest.mark.parametrize(

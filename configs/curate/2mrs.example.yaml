@@ -1,13 +1,6 @@
-input_file: tests/data/raw/2mrs_sample.fits
-output_dir: reports/curated/2mrs.parquet
+input_file: tests/data/prepared/2mrs.parquet
+output_dir: tests/data/curated/2mrs.parquet
 overwrite: true
-fits_hdu: 1
-
-column_selection:
-  - RA
-  - DEC
-  - redshift
-  - redshift_err
 
 coordinates:
   ra_column: RA
@@ -15,6 +8,7 @@ coordinates:
 
 redshift:
   column: redshift
+  invalid_policy: keep
 
 transformations:
   - type: velocity_to_redshift

@@ -710,7 +710,7 @@ def test_inspect_hats_catalog_uses_lsdb_with_dask_client(tmp_path, monkeypatch):
     [
         ("configs/inspect/2dfgrs.example.yaml", "2DFGRS", 1000),
         ("configs/inspect/2dflens.example.yaml", "2DFLENS", 1000),
-        ("configs/inspect/2mrs.example.yaml", "2MRS", 1000),
+        ("configs/inspect/2mrs.example.yaml", "2MRS", 2000),
         ("configs/inspect/6dfgs.example.yaml", "6DFGS", 1000),
         ("configs/inspect/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 1000),
         ("configs/inspect/elaisfbmc_collection.example.yaml", "ELAISFBMC_COLLECTION", 3762),

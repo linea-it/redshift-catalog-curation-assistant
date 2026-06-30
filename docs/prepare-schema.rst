@@ -20,7 +20,8 @@ Required Fields
 
 ``input_file`` or ``input_files``
   Source catalog path, or a list of files that represent one logical catalog.
-  Multiple inputs must have the same format and schema.
+  Multiple inputs must have the same format. Their schemas must match unless
+  ``schema_policy: union`` is selected.
 
   If the input is already HATS, ``prepare`` stops with a message explaining that
   HATS is supported directly by downstream commands and does not need
@@ -38,6 +39,11 @@ Input Options
 
 ``column_names``
   Required for headerless whitespace inputs such as ``.dat`` and ``.idz``.
+
+``schema_policy``
+  Controls multi-file schema handling. ``strict`` is the default and rejects
+  mismatches. ``union`` keeps columns in first-seen order and fills columns
+  missing from an input with null values.
 
 ``large_file_threshold_mb``
   Defaults to ``100``. Small single-file inputs below the threshold are read in
@@ -199,5 +205,6 @@ Prepare several files as one logical catalog:
      - path/to/catalog_part0.csv
      - path/to/catalog_part1.csv
    output_dir: outputs/prepared/catalog.parquet
+   schema_policy: union
    overwrite: true
    output_mode: auto

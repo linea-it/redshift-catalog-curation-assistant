@@ -52,15 +52,8 @@ error ``EV`` in km/s to redshift and redshift error.
 
 .. code-block:: yaml
 
-   input_file: tests/data/raw/2mrs_sample.fits
-   output_dir: outputs/curated/2mrs.parquet
-   fits_hdu: 1
-
-   column_selection:
-     - RA
-     - DEC
-     - redshift
-     - redshift_err
+   input_file: tests/data/prepared/2mrs.parquet
+   output_dir: tests/data/curated/2mrs.parquet
 
    coordinates:
      ra_column: RA

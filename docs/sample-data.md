@@ -15,7 +15,7 @@ Current source files used to generate the versioned fixtures:
 - `2dflens_bestredshifts_goodz_withtypesandmags_final.dat.gz`: 2dFLenS
 - `best.observations.idz.gz`: 2dFGRS
 - `merged_cat_LSST_WL_Y1.fits`: DESI Deep Pilot
-- `2mrs_1175_done.fits`: 2MRS
+- `2mrs_1175_done.fits` and `2mrs_extra_done.fits`: 2MRS
 - `part0.snappy.parquet`: Euclid Q1 sample source
 - `spAll-v6_1_3.fits`: SDSS DR19 spAll
 - `spec_dr3.csv.gz`: 6dFGS
@@ -33,8 +33,9 @@ Versioned fixtures:
   Deep Pilot FITS table HDU, preserving all columns.
 - `tests/data/raw/6dfgs_sample.csv.gz`: CSV header plus first 1000 rows from the
   6dFGS file.
-- `tests/data/raw/2mrs_sample.fits`: first 1000 rows from the 2MRS FITS table
-  HDU, preserving all columns.
+- `tests/data/raw/2mrs_1175_done_sample.fits` and
+  `tests/data/raw/2mrs_extra_done_sample.fits`: first 1000 rows from each 2MRS
+  FITS table HDU, preserving their distinct 29- and 32-column schemas.
 - `tests/data/raw/euclid_q1_sample.snappy.parquet`: first 1000 rows from the
   Euclid Q1 Parquet source, preserving all columns.
 - `tests/data/raw/sdss_dr19_sample.fits`: first 1000 rows from the SDSS DR19

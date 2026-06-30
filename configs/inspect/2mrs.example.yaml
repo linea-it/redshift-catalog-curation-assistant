@@ -1,6 +1,5 @@
-input_file: tests/data/raw/2mrs_sample.fits
+input_file: tests/data/prepared/2mrs.parquet
 survey_name: 2MRS
-fits_hdu: 1
 unique_limit: 10
 
 column_patterns:

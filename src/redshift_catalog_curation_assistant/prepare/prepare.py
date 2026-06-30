@@ -36,6 +36,7 @@ DEFAULT_CHUNK_SIZE_ROWS = 200_000
 DEFAULT_TARGET_PARTITION_SIZE_MB = 100
 OUTPUT_MODES = {"auto", "single", "partitioned"}
 OUTPUT_FORMATS = {"parquet", "hats"}
+SCHEMA_POLICIES = {"strict", "union"}
 
 
 class PrepareError(ValueError):
@@ -85,6 +86,17 @@ def _output_format(config: dict[str, Any]) -> str:
     if output_format not in OUTPUT_FORMATS:
         raise PrepareError("output_format must be one of: parquet, hats.")
     return output_format
+
+
+def _schema_policy(config: dict[str, Any]) -> str:
+    policy = str(config.get("schema_policy", "strict")).lower()
+    if policy not in SCHEMA_POLICIES:
+        raise PrepareError("schema_policy must be one of: strict, union.")
+    return policy
+
+
+def _union_schema(schemas: list[list[str]]) -> list[str]:
+    return list(dict.fromkeys(column for schema in schemas for column in schema))
 
 
 def _hats_ra_dec_columns(config: dict[str, Any]) -> tuple[str, str]:
@@ -286,6 +298,7 @@ def dry_run_prepare_config(config: dict[str, Any]) -> Path:
 
     output_format = _output_format(config)
     _output_mode(config)
+    schema_policy = _schema_policy(config)
     _target_partition_size_bytes(config)
     cluster_config = dask_cluster_config(config)
     _dask_logs_dir(cluster_config, output_dir)
@@ -323,7 +336,7 @@ def dry_run_prepare_config(config: dict[str, Any]) -> Path:
     schemas = {path: _dry_run_schema_for_path(path, suffix, config) for path in input_paths}
     first_schema = schemas[input_paths[0]]
     mismatches = {path: schema for path, schema in schemas.items() if schema != first_schema}
-    if mismatches:
+    if mismatches and schema_policy == "strict":
         lines = ["Multi-file inputs must describe one logical catalog with the same schema."]
         lines.append(f"{input_paths[0]}: {', '.join(first_schema)}")
         for path, schema in mismatches.items():
@@ -336,9 +349,10 @@ def dry_run_prepare_config(config: dict[str, Any]) -> Path:
         is_single_small_file=len(input_paths) == 1 and is_small_input,
         is_multi_file=len(input_paths) > 1,
     )
+    effective_schema = _union_schema(list(schemas.values()))
     if output_format == "hats":
         ra_column, dec_column = _hats_ra_dec_columns(config)
-        missing = [column for column in [ra_column, dec_column] if column not in first_schema]
+        missing = [column for column in [ra_column, dec_column] if column not in effective_schema]
         if missing:
             raise PrepareError(f"{HATS_COORDINATE_ERROR} Missing coordinate columns: {', '.join(missing)}.")
         _hats_margin_threshold(config)
@@ -457,6 +471,9 @@ def _validate_matching_schemas(paths: list[Path], suffix: str, config: dict[str,
     if not mismatches:
         return first_schema
 
+    if _schema_policy(config) == "union":
+        return _union_schema(list(schemas.values()))
+
     lines = ["Multi-file inputs must describe one logical catalog with the same schema."]
     lines.append(f"{first_path}: {', '.join(first_schema)}")
     for path, schema in mismatches.items():
@@ -513,7 +530,7 @@ def _fits_paths_to_dask_dataframe(
         n_partitions += path_partitions
     if len(dataframes) == 1:
         return dataframes[0], n_partitions
-    return dd.concat(dataframes), n_partitions
+    return dd.concat(dataframes, join="outer"), n_partitions
 
 
 def _tabular_to_dask_dataframe(paths: list[Path], config: dict[str, Any]) -> tuple[Any, str]:
@@ -522,6 +539,9 @@ def _tabular_to_dask_dataframe(paths: list[Path], config: dict[str, Any]) -> tup
     suffix = _data_suffix(paths[0])
     path_strings = [str(path) for path in paths]
     if suffix in {".csv", ".txt"}:
+        if len(paths) > 1 and _schema_policy(config) == "union":
+            frames = [dd.read_csv(str(path), blocksize=_target_partition_size(config)) for path in paths]
+            return dd.concat(frames, join="outer"), suffix.lstrip(".")
         return dd.read_csv(path_strings, blocksize=_target_partition_size(config)), suffix.lstrip(".")
     if suffix in HEADERLESS_SUFFIXES:
         column_names = config.get("column_names")
@@ -543,6 +563,17 @@ def _tabular_to_dask_dataframe(paths: list[Path], config: dict[str, Any]) -> tup
             suffix.lstrip("."),
         )
     if suffix in PARQUET_SUFFIXES:
+        if len(paths) > 1 and _schema_policy(config) == "union":
+            frames = [
+                dd.read_parquet(
+                    str(path),
+                    split_row_groups=True,
+                    blocksize=_target_partition_size(config),
+                    aggregate_files=False,
+                )
+                for path in paths
+            ]
+            return dd.concat(frames, join="outer"), "parquet"
         return (
             dd.read_parquet(
                 path_strings,
@@ -604,6 +635,13 @@ def _write_small_input(path: Path, output_dir: Path, config: dict[str, Any]) -> 
     return 1
 
 
+def _write_small_inputs(paths: list[Path], suffix: str, output_dir: Path, config: dict[str, Any]) -> int:
+    df = _small_inputs_dataframe(paths, suffix, config)
+    prefix = str(config.get("part_prefix") or paths[0].stem)
+    df.to_parquet(output_dir / f"{prefix}-part0.parquet", index=False)
+    return 1
+
+
 def _small_input_dataframe(path: Path, config: dict[str, Any]) -> pd.DataFrame:
     return read_table(
         path,
@@ -617,7 +655,7 @@ def _small_inputs_dataframe(paths: list[Path], suffix: str, config: dict[str, An
     if len(paths) > 1:
         _validate_matching_schemas(paths, suffix, config)
     frames = [_small_input_dataframe(path, config) for path in paths]
-    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    return pd.concat(frames, ignore_index=True, sort=False) if len(frames) > 1 else frames[0]
 
 
 def _write_small_hats_inputs(paths: list[Path], suffix: str, output_dir: Path, config: dict[str, Any]) -> int:
@@ -692,6 +730,7 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
     chunk_size = int(config.get("chunk_size_rows", DEFAULT_CHUNK_SIZE_ROWS))
     prefix = str(config.get("part_prefix") or input_paths[0].stem)
     output_format = _output_format(config)
+    _schema_policy(config)
     input_size = _total_input_size(input_paths)
     LOGGER.info(
         "Starting prepare: inputs=%d, size=%.2f GB, output_format=%s, output=%s",
@@ -786,9 +825,12 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         LOGGER.info("Prepare completed in %.1f seconds", time.monotonic() - started_at)
         return output_dir
 
-    if is_single_small_file and output_mode == "single" and output_format == "parquet":
+    if is_small_input and output_mode == "single" and output_format == "parquet":
         LOGGER.info("Reading input and writing single Parquet file")
-        n_partitions = _write_small_input(input_paths[0], output_dir, config)
+        if is_single_small_file:
+            n_partitions = _write_small_input(input_paths[0], output_dir, config)
+        else:
+            n_partitions = _write_small_inputs(input_paths, suffix, output_dir, config)
         LOGGER.info("Writing preparation manifest")
         _write_manifest(
             output_dir,
@@ -808,6 +850,7 @@ def prepare_catalog(config: dict[str, Any]) -> Path:
         )
 
     if suffix in FITS_SUFFIXES:
+        _validate_matching_schemas(input_paths, suffix, config)
         LOGGER.info("Building partitioned Dask dataframe from FITS input")
         df, n_partitions = _fits_paths_to_dask_dataframe(
             input_paths,

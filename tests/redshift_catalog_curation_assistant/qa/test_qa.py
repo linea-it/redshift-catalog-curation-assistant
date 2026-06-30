@@ -107,7 +107,7 @@ def test_generate_qa_notebook_supports_hats_input(tmp_path):
 
 
 def test_generate_qa_notebook_can_use_relative_input_path(tmp_path):
-    """Ensure users can opt out of absolute input paths in generated read cells."""
+    """Ensure users can emit an executable relative path in generated read cells."""
     output_notebook = tmp_path / "reports" / "qa.ipynb"
     input_file = tmp_path / "curated" / "c3r2_dr3.parquet"
 
