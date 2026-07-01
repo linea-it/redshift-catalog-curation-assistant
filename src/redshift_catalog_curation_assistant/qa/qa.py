@@ -361,18 +361,7 @@ def _qa_data_mode(config: dict[str, Any]) -> str:
 def _data_mode_source(config: dict[str, Any]) -> str:
     mode = _qa_data_mode(config)
     if mode == "auto":
-        threshold = float(config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB))
-        force_compute = bool(config.get("force_compute", False))
-        source = (
-            "**Data access mode:** resolved at runtime after PZ Server download  \n"
-            "**Input size:** determined from the detected local input after unzip  \n"
-            f"**Lazy threshold:** {threshold:g} MB"
-        )
-        if force_compute:
-            source += "  \n**Override:** force complete in-memory read after autodetection"
-        else:
-            source += f"  \n**Lazy executor when needed:** {dask_cluster_config(config)['name']}"
-        return source
+        return "**Data access mode:** resolved at runtime after PZ Server download"
     input_size = _input_size_bytes(Path(config["input_file"])) if config.get("input_file") else None
     size_label = "unknown" if input_size is None else f"{input_size / (1024 * 1024):.2f} MB"
     threshold = float(config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB))
@@ -661,6 +650,17 @@ def _local_data_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
             "        return pd.read_csv(qa_input_file, usecols=columns)\n"
             "    catalog = lsdb.open_catalog(qa_input_file, columns=columns)\n"
             "    return catalog.compute()\n\n"
+            "qa_runtime_summary = pd.Series({\n"
+            "    'input_file': str(qa_input_file),\n"
+            "    'input_format': qa_input_format,\n"
+            "    'input_size_mb': qa_input_size_bytes / (1024 * 1024),\n"
+            "    'access_mode': qa_access_mode,\n"
+            "})\n"
+            "qa_runtime_summary['input_size_mb'] = f\"{qa_runtime_summary['input_size_mb']:.2f} MB\"\n"
+            "if qa_access_mode == 'lazy':\n"
+            f"    qa_runtime_summary['dask_executor'] = {dask_cluster_config(config)['name']!r}\n"
+            "else:\n"
+            "    qa_runtime_summary['dask_executor'] = 'not used'\n\n"
             "qa_data = qa_open_data()\n"
             "qa_input_file, qa_input_format, qa_access_mode"
         )
@@ -798,6 +798,8 @@ qa_input_format, qa_input_file = candidates[0]
 def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
     if _pzs_auto_input(config):
         return [
+            _markdown_cell("Detected input and runtime access mode."),
+            _code_cell("qa_runtime_summary"),
             _markdown_cell("First rows."),
             _code_cell("qa_data.head()"),
             _markdown_cell("Total number of rows."),

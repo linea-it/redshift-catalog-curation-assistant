@@ -165,6 +165,10 @@ def test_generate_qa_notebook_autodetects_unzipped_pzserver_input(tmp_path):
     assert "collection.properties" in combined
     assert "hats.properties" in combined
     assert "qa_input_format, qa_input_file = candidates[0]" in combined
+    assert "**Data access mode:** resolved at runtime after PZ Server download" in combined
+    assert "**Input size:** determined from the detected local input after unzip" not in combined
+    assert "**Lazy threshold:** 100 MB" not in combined
+    assert "**Lazy executor when needed:**" not in combined
     assert "def qa_open_data(columns=None):" in combined
     assert "return dd.read_parquet(qa_input_file, columns=columns)" in combined
     assert "return dd.read_csv(qa_input_file, usecols=columns)" in combined
@@ -172,6 +176,9 @@ def test_generate_qa_notebook_autodetects_unzipped_pzserver_input(tmp_path):
     assert "qa_input_size_bytes = qa_path_size_bytes(qa_input_file)" in combined
     assert "qa_access_mode = 'lazy'" in combined
     assert "qa_access_mode = 'in_memory'" in combined
+    assert "qa_runtime_summary = pd.Series({" in combined
+    assert "'input_size_mb': qa_input_size_bytes / (1024 * 1024)" in combined
+    assert "qa_runtime_summary['dask_executor'] = 'not used'" in combined
     assert "qa_data = qa_open_data()" in combined
 
 
