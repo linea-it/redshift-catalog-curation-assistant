@@ -114,6 +114,146 @@ def test_generate_qa_notebook_supports_hats_input(tmp_path):
     assert any("max-height: 520px; overflow: auto" in source for source in sources)
 
 
+def test_generate_qa_notebook_downloads_optional_pzserver_product(tmp_path):
+    """Ensure PZ Server products are downloaded before normal catalog loading."""
+    output_notebook = tmp_path / "qa.ipynb"
+    generate_qa_notebook(
+        {
+            "input_file": str(tmp_path / "downloaded_data" / "303_c3r2_dr3" / "catalog.parquet"),
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "pzs_prod_name": "303_c3r2_dr3",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "pzs_download_dir": str(tmp_path / "downloaded_data"),
+            "pzs_overwrite": True,
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = ["".join(cell["source"]) for cell in notebook["cells"]]
+    combined = "\n".join(sources)
+    assert "from pzserver import PzServer" in combined
+    assert "pz_server = PzServer(token=token, host='pz')" in combined
+    assert "prod_name = '303_c3r2_dr3'" in combined
+    assert "download_path = download_root / prod_name" in combined
+    assert "pzs_overwrite = True" in combined
+    assert "shutil.rmtree(download_path)" in combined
+    assert "pz_server.download_product(product_id=prod_name, save_in=download_path)" in combined
+    assert "archive.extractall(download_path)" in combined
+    assert "df = pd.read_parquet('downloaded_data/303_c3r2_dr3/catalog.parquet')" in sources
+
+
+def test_generate_qa_notebook_autodetects_unzipped_pzserver_input(tmp_path):
+    """Ensure PZ Server inputs can be detected from the extracted archive contents."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "pzs_prod_name": "314_desi_dr1_lite",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "pzs_download_dir": str(tmp_path / "downloaded_data"),
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    combined = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    assert "collection.properties" in combined
+    assert "hats.properties" in combined
+    assert "qa_input_format, qa_input_file = candidates[0]" in combined
+    assert "def qa_open_data(columns=None):" in combined
+    assert "return dd.read_parquet(qa_input_file, columns=columns)" in combined
+    assert "return dd.read_csv(qa_input_file, usecols=columns)" in combined
+    assert "return lsdb.open_catalog(qa_input_file, columns=columns)" in combined
+    assert "qa_input_size_bytes = qa_path_size_bytes(qa_input_file)" in combined
+    assert "qa_access_mode = 'lazy'" in combined
+    assert "qa_access_mode = 'in_memory'" in combined
+    assert "qa_data = qa_open_data()" in combined
+
+
+def test_qa_config_requires_complete_pzserver_configuration():
+    """Ensure partially configured PZ Server access fails validation."""
+    with pytest.raises(ValueError, match="pzs_token_path"):
+        dry_run_qa_config({"input_file": "catalog.parquet", "pzs_prod_name": "123_product"})
+
+
+def test_qa_config_rejects_non_boolean_pzserver_overwrite():
+    """Ensure product replacement requires an explicit boolean setting."""
+    with pytest.raises(ValueError, match="pzs_overwrite"):
+        dry_run_qa_config(
+            {
+                "input_file": "catalog.parquet",
+                "pzs_prod_name": "123_product",
+                "pzs_token_path": "token.txt",
+                "pzs_host": "pz",
+                "pzs_overwrite": "yes",
+            }
+        )
+
+
+def test_qa_config_rejects_pzserver_input_format_override_without_input_file():
+    """Ensure PZ override format is only accepted alongside an explicit input path."""
+    with pytest.raises(ValueError, match="input_format override requires an input_file override"):
+        dry_run_qa_config(
+            {
+                "pzs_prod_name": "123_product",
+                "pzs_token_path": "token.txt",
+                "pzs_host": "pz",
+                "input_format": "parquet",
+            }
+        )
+
+
+def test_generate_qa_notebook_supports_force_compute_with_pzserver_autodetection(tmp_path):
+    """Ensure runtime autodetection can still force a full in-memory read after download."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "pzs_prod_name": "123_product",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "force_compute": True,
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    combined = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    assert "qa_force_compute = True" in combined
+    assert "qa_access_mode = 'forced_in_memory'" in combined
+
+
+def test_generate_qa_notebook_compiles_for_pzserver_autodetection_with_plots(tmp_path):
+    """Ensure the automatic PZ Server path emits syntactically valid code across QA sections."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "pzs_prod_name": "123_product",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "plots": {
+                "spatial": {"ra_column": "ra", "dec_column": "dec"},
+                "redshift": {"column": "z", "range": [0, 4]},
+                "quality": {"column": "quality"},
+            },
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    code_sources = ["".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"]
+
+    for index, source in enumerate(code_sources):
+        compile(source, f"qa-auto-cell-{index}", "exec")
+
+
 def test_generate_qa_notebook_can_use_relative_input_path(tmp_path):
     """Ensure users can emit an executable relative path in generated read cells."""
     output_notebook = tmp_path / "reports" / "qa.ipynb"
