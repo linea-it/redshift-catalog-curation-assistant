@@ -81,8 +81,19 @@ Input And Output Options
   ``partitioned``. Large ``single`` output requires
   ``allow_large_single_output: true``.
 
+``allow_large_single_output``
+  ``false`` by default. Required when ``output_mode: single`` would
+  concentrate a large input into one Parquet part.
+
 ``target_partition_size_mb``
   Target partition size used for large Parquet/Dask processing.
+
+``dask_threshold_mb``
+  Legacy alias for ``large_file_threshold_mb``. Prefer
+  ``large_file_threshold_mb`` in new configurations.
+
+``chunk_size_rows``
+  Optional positive FITS chunk-size setting accepted for compatibility.
 
 ``persist_after_transformations``
   ``false`` by default. When ``true`` and the input is a large Parquet/Dask
@@ -93,6 +104,9 @@ Input And Output Options
 ``part_prefix``
   Prefix for generated Parquet part filenames. Defaults to the output
   directory name.
+
+``progress_bar``
+  ``false`` by default. Enables progress bars in supported Dask/HATS writers.
 
 ``fits_hdu``
   FITS HDU to read when curating FITS inputs.
@@ -145,7 +159,12 @@ HATS output uses the final validated coordinate columns by default:
    hats:
      catalog_name: my_curated_catalog
      hats_output_with_margin: true
-     margin_threshold: 5.0
+    margin_threshold: 5.0
+
+``hats.catalog_name`` names the catalog inside the output collection and
+defaults to the output directory name. ``hats.sort_columns`` optionally selects
+a large-input sort column for ``hats_import``. ``hats.create_thumbnail`` is
+``false`` by default and requests thumbnail creation when enabled.
 
 Override ``hats.ra_column`` and ``hats.dec_column`` only when the HATS spatial
 index should use different final columns. Those columns must still be present
@@ -270,7 +289,41 @@ redshift validation.
 
      - type: cast
        column: VI_quality
-       dtype: float64
+     dtype: float64
+
+``absolute_value``
+  Writes the absolute value of a numeric source column. ``dtype`` is optional.
+
+  .. code-block:: yaml
+
+     - type: absolute_value
+       input_column: signed_degrees
+       output_column: degrees
+       dtype: int64
+
+``signed_value_sign``
+  Writes a string label based on whether a numeric value is negative. Labels
+  default to ``-`` and ``+``.
+
+  .. code-block:: yaml
+
+     - type: signed_value_sign
+       input_column: signed_degrees
+       output_column: degree_sign
+       negative_label: "-"
+       non_negative_label: "+"
+
+``replace_values``
+  Replaces configured values in an existing column. Use YAML ``null`` to map a
+  sentinel to a missing value.
+
+  .. code-block:: yaml
+
+     - type: replace_values
+       column: magnitude
+       replacements:
+         - from: -1.0
+           to: null
 
 ``ra_hms_to_degrees``
   Converts RA from hours, minutes, and seconds to degrees.

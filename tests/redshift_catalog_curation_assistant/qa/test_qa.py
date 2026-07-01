@@ -1,6 +1,9 @@
 import json
+import warnings
 from datetime import date
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from redshift_catalog_curation_assistant.qa import dry_run_qa_config, generate_qa_notebook, run_qa_config
@@ -104,6 +107,7 @@ def test_generate_qa_notebook_supports_hats_input(tmp_path):
     assert any("import lsdb" in source for source in sources)
     assert any("catalog = lsdb.open_catalog('" in source for source in sources)
     assert any("curated/hats_catalog" in source for source in sources)
+    assert any("max-height: 520px; overflow: auto" in source for source in sources)
 
 
 def test_generate_qa_notebook_can_use_relative_input_path(tmp_path):
@@ -334,3 +338,138 @@ def test_qa_config_requires_local_input_file():
     """Ensure QA notebook generation is not configured around remote product names."""
     with pytest.raises(ValueError, match="requires input_file"):
         dry_run_qa_config({"title": "Missing input"})
+
+
+def test_generate_qa_notebook_uses_lazy_partition_aggregations_for_large_parquet(tmp_path):
+    """Ensure large Parquet QA never materializes the complete dataframe."""
+    input_file = tmp_path / "catalog.parquet"
+    pd.DataFrame(
+        {
+            "ra": [10.0, 20.0, 30.0],
+            "dec": [-1.0, 0.0, 1.0],
+            "z": [0.1, 0.2, 0.3],
+            "z_err": [0.01, 0.02, 0.03],
+            "quality": [3, 4, 4],
+        }
+    ).to_parquet(input_file)
+    output_notebook = tmp_path / "reports" / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "input_file": str(input_file),
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "large_input_threshold_mb": 0.000001,
+            "dask_cluster": {
+                "name": "local",
+                "args": {"processes": False, "n_workers": 2},
+            },
+            "plots": {
+                "spatial": {"ra_column": "ra", "dec_column": "dec"},
+                "redshift": {"column": "z", "range": [0, 1]},
+                "redshift_error": {"column": "z_err"},
+                "quality": {"column": "quality"},
+            },
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    assert "**Data access mode:** lazy partition aggregation" in sources
+    assert "df = dd.read_parquet('../catalog.parquet')" in sources
+    assert "dd.read_parquet('/" not in sources
+    assert "df = pd.read_parquet" not in sources
+    assert "qa_cluster = create_dask_cluster(" in sources
+    assert "'processes': False" in sources
+    assert "qa_client = Client(qa_cluster)" in sources
+    assert "qa_client.close()" in sources
+    assert "qa_cluster.close()" in sources
+    assert "qa_histogram2d(plot_data, 'ra', 'dec'" in sources
+    assert "qa_histogram1d(" in sources
+    assert "qa_value_counts(plot_data, 'quality')" in sources
+    assert "columns=['ra', 'dec']" in sources
+    assert "del plot_data" in sources
+
+
+def test_generate_qa_notebook_force_compute_overrides_large_input_mode(tmp_path):
+    """Ensure users can explicitly accept full in-memory loading for large inputs."""
+    input_file = tmp_path / "catalog.parquet"
+    pd.DataFrame({"ra": [10.0], "dec": [-1.0], "z": [0.1]}).to_parquet(input_file)
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "input_file": str(input_file),
+            "output_notebook": str(output_notebook),
+            "large_input_threshold_mb": 0.000001,
+            "force_compute": True,
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    assert "**Data access mode:** forced in-memory" in sources
+    assert f"df = pd.read_parquet('{input_file.resolve()}')" in sources
+    assert "force_compute=True" in sources
+    assert "dd.read_parquet" not in sources
+    assert "create_dask_cluster" not in sources
+
+
+def test_generate_qa_notebook_uses_public_lazy_hats_operations(tmp_path):
+    """Ensure large HATS notebooks use public LSDB projection and aggregation APIs."""
+    output_notebook = tmp_path / "qa.ipynb"
+    hats_path = "tests/data/raw/elaisfbmc_collection"
+
+    generate_qa_notebook(
+        {
+            "input_file": hats_path,
+            "input_format": "hats",
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "large_input_threshold_mb": 0.000001,
+            "plots": {"redshift": {"column": "zbest", "range": [0, 5]}},
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    assert "catalog = lsdb.open_catalog(" in sources
+    assert "catalog.compute()" not in sources
+    assert "catalog.aggregate_column_statistics()" in sources
+    assert "columns=['zbest']" in sources
+    assert "._ddf" not in sources
+    assert "lsdb.open_catalog('/" not in sources
+
+
+@pytest.mark.parametrize(
+    ("config_value", "message"),
+    [
+        ({"large_input_threshold_mb": 0}, "large_input_threshold_mb"),
+        ({"force_compute": "yes"}, "force_compute"),
+        ({"dask_cluster": "local"}, "dask_cluster must be a mapping"),
+        (
+            {"dask_cluster": {"name": "slurm", "args": {}}},
+            "SLURM Dask clusters require complete",
+        ),
+    ],
+)
+def test_qa_config_validates_large_input_options(config_value, message):
+    """Ensure large-input controls reject ambiguous values."""
+    with pytest.raises(ValueError, match=message):
+        dry_run_qa_config({"input_file": "catalog.parquet", **config_value})
+
+
+def test_lazy_histogram_derives_range_without_materializing_values():
+    """Ensure lazy histograms can derive finite bin edges by partition."""
+    import dask.dataframe as dd
+
+    from redshift_catalog_curation_assistant.qa.qa import _lazy_helpers_source
+
+    namespace = {"np": np, "pd": pd, "warnings": warnings}
+    exec(_lazy_helpers_source(), namespace)
+    source = dd.from_pandas(pd.DataFrame({"z": [0.1, 0.2, np.nan, 0.4]}), npartitions=1)
+
+    counts, edges = namespace["qa_histogram1d"](source, "z", bins=3)
+
+    assert counts.tolist() == [1, 1, 1]
+    assert edges.tolist() == pytest.approx([0.1, 0.2, 0.3, 0.4])

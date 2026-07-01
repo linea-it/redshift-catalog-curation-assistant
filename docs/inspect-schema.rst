@@ -90,6 +90,10 @@ Large Input Options
   Number of FITS rows read per row chunk when ``parallel_stats: true``.
   Defaults to ``200000``.
 
+``chunk_size_rows``
+  Legacy alias used for FITS statistics when ``fits_stats_chunk_rows`` is not
+  configured. Prefer ``fits_stats_chunk_rows`` in new configurations.
+
 ``dask_cluster``
   Optional Dask executor config. If omitted and a Dask path is used, the default
   local cluster has one worker, one thread per worker, and 6 GB memory.

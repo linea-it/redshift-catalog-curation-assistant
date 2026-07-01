@@ -50,6 +50,10 @@ Input Options
   Defaults to ``100``. Small single-file inputs below the threshold are read in
   memory and written as one Parquet part. Large inputs use Dask/chunked paths.
 
+``dask_threshold_mb``
+  Legacy alias for ``large_file_threshold_mb``. Prefer
+  ``large_file_threshold_mb`` in new configurations.
+
 ``chunk_size_rows``
   Row chunk size for FITS input. Defaults to ``200000``. The effective chunk
   size is capped by ``target_partition_size_mb``.
@@ -80,6 +84,9 @@ Output Options
 
 ``part_prefix``
   Prefix for generated Parquet part filenames. Defaults to the input stem.
+
+``progress_bar``
+  ``false`` by default. Enables progress bars in supported HATS writers.
 
 ``dask_cluster``
   Optional Dask executor config. If omitted and a Dask path is used, the default
@@ -122,6 +129,9 @@ The ``hats`` block must identify the coordinate columns:
 
 ``hats.sort_columns``
   Optional column name passed to ``hats_import`` for large-input sorting.
+
+``hats.create_thumbnail``
+  ``false`` by default. Requests thumbnail creation from LSDB/HATS writers.
 
 Small inputs below ``large_file_threshold_mb`` are read into pandas, converted
 with ``lsdb.from_dataframe()``, and written with ``Catalog.write_catalog()``.

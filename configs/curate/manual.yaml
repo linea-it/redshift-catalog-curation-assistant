@@ -102,6 +102,34 @@ transformations:
     # Target dtype.
     dtype: float64
 
+  # Write the absolute value of a numeric column.
+  - type: absolute_value
+    # Input signed numeric column.
+    input_column: signed_degrees
+    # Output absolute-value column.
+    output_column: degrees
+    # Optional output dtype.
+    dtype: int64
+
+  # Derive a string sign label from a numeric column.
+  - type: signed_value_sign
+    # Input signed numeric column.
+    input_column: signed_degrees
+    # Output sign-label column.
+    output_column: degree_sign
+    # Labels default to "-" and "+".
+    negative_label: "-"
+    non_negative_label: "+"
+
+  # Replace explicit values or sentinels in one column.
+  - type: replace_values
+    # Existing column modified in place.
+    column: magnitude
+    # Ordered source/replacement mappings; null writes a missing value.
+    replacements:
+      - from: -1.0
+        to: null
+
   # Convert RA H/M/S columns to degrees.
   - type: ra_hms_to_degrees
     # Output RA degree column.

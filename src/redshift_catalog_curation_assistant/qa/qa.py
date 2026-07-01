@@ -7,6 +7,8 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from ..executor import dask_cluster_config
+
 NOTEBOOK_METADATA = {
     "kernelspec": {
         "display_name": "Python 3",
@@ -18,6 +20,7 @@ NOTEBOOK_METADATA = {
         "pygments_lexer": "ipython3",
     },
 }
+DEFAULT_LARGE_INPUT_THRESHOLD_MB = 100
 
 
 def load_qa_config(path: Path) -> dict[str, Any]:
@@ -121,6 +124,18 @@ def _validate_qa_config(config: Any) -> dict[str, Any]:
         config["include_absolute_input_path"], bool
     ):
         raise ValueError("include_absolute_input_path must be true or false.")
+    threshold = config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB)
+    if isinstance(threshold, bool) or not isinstance(threshold, int | float) or threshold <= 0:
+        raise ValueError("large_input_threshold_mb must be a positive number.")
+    if "force_compute" in config and not isinstance(config["force_compute"], bool):
+        raise ValueError("force_compute must be true or false.")
+    if (
+        "dask_cluster" in config
+        and config["dask_cluster"] is not None
+        and not isinstance(config["dask_cluster"], dict)
+    ):
+        raise ValueError("dask_cluster must be a mapping when provided.")
+    dask_cluster_config(config)
     if "generate_html" in config and not isinstance(config["generate_html"], bool):
         raise ValueError("generate_html must be true or false.")
     output_html = config.get("output_html")
@@ -283,6 +298,44 @@ def _validate_notebook_runtime_paths(config: dict[str, Any]) -> None:
         _validate_footprints(_configured_footprints(spatial))
 
 
+def _input_size_bytes(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    if path.is_file():
+        return path.stat().st_size
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def _qa_data_mode(config: dict[str, Any]) -> str:
+    if config.get("force_compute", False):
+        return "forced_in_memory"
+    input_size = _input_size_bytes(Path(config["input_file"]))
+    threshold = float(config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB))
+    if input_size is not None and input_size > threshold * 1024 * 1024:
+        return "lazy"
+    return "in_memory"
+
+
+def _data_mode_source(config: dict[str, Any]) -> str:
+    mode = _qa_data_mode(config)
+    input_size = _input_size_bytes(Path(config["input_file"]))
+    size_label = "unknown" if input_size is None else f"{input_size / (1024 * 1024):.2f} MB"
+    threshold = float(config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB))
+    labels = {
+        "in_memory": "in-memory",
+        "forced_in_memory": "forced in-memory",
+        "lazy": "lazy partition aggregation",
+    }
+    source = (
+        f"**Data access mode:** {labels[mode]}  \n"
+        f"**Input size:** {size_label}  \n"
+        f"**Lazy threshold:** {threshold:g} MB"
+    )
+    if mode == "lazy":
+        source += f"  \n**Dask executor:** {dask_cluster_config(config)['name']}"
+    return source
+
+
 def _build_notebook(config: dict[str, Any]) -> dict[str, Any]:
     cells = [
         _markdown_cell(_header_source(config)),
@@ -315,21 +368,12 @@ def _build_notebook(config: dict[str, Any]) -> dict[str, Any]:
         ]
     )
 
+    cells.append(_markdown_cell(_data_mode_source(config)))
+    cells.extend(_dask_setup_cells(config))
     cells.extend(_local_data_cells(config))
-
-    cells.extend(
-        [
-            _markdown_cell("First rows."),
-            _code_cell("df.head()"),
-            _markdown_cell("Total number of rows."),
-            _code_cell("len(df)"),
-            _markdown_cell("Total number of columns."),
-            _code_cell("len(df.columns.to_list())"),
-            _markdown_cell("## Basic Statistics "),
-            _code_cell("df.describe()"),
-        ]
-    )
+    cells.extend(_basic_information_cells(config))
     cells.extend(_plot_cells(config))
+    cells.extend(_dask_cleanup_cells(config))
     for index, cell in enumerate(cells):
         cell.setdefault("id", f"qa-cell-{index:03d}")
 
@@ -395,7 +439,7 @@ def _imports_source(config: dict[str, Any]) -> str:
         "# General",
         "import numpy as np",
         "import pandas as pd",
-        "from IPython.display import display, Markdown",
+        "from IPython.display import display, HTML, Markdown",
         "",
     ]
     plots = config.get("plots") or {}
@@ -408,15 +452,84 @@ def _imports_source(config: dict[str, Any]) -> str:
         imports.append("import seaborn as sns")
     if has_plotting:
         imports.append("")
-    if str(config.get("input_format", "parquet")).lower() == "hats":
+    input_format = str(config.get("input_format", "parquet")).lower()
+    if _qa_data_mode(config) == "lazy" and input_format in {"parquet", "csv"}:
+        imports.extend(["# Lazy tabular access", "import dask.dataframe as dd", ""])
+    if _qa_data_mode(config) == "lazy":
+        imports.extend(
+            [
+                "# Distributed execution",
+                "import atexit",
+                "from dask.distributed import Client",
+                "from redshift_catalog_curation_assistant.executor import create_dask_cluster",
+                "",
+            ]
+        )
+    if input_format == "hats":
         imports.extend(["# HATS", "import lsdb"])
+    if _qa_data_mode(config) == "lazy":
+        imports.extend(["import warnings", "", _lazy_helpers_source()])
     return "\n".join(imports)
+
+
+def _qa_dask_logs_dir(config: dict[str, Any]) -> Path | None:
+    cluster_config = dask_cluster_config(config)
+    configured = cluster_config.get("logs_dir")
+    if configured:
+        return Path(configured)
+    if str(cluster_config.get("name", "local")).lower() == "slurm":
+        return _output_notebook(config).parent / "logs"
+    return None
+
+
+def _dask_setup_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if _qa_data_mode(config) != "lazy":
+        return []
+    cluster_config = dask_cluster_config(config)
+    logs_dir = _qa_dask_logs_dir(config)
+    logs_value = _notebook_path(config, logs_dir) if logs_dir is not None else None
+    source = (
+        f"qa_cluster_config = {cluster_config!r}\n"
+        f"qa_cluster = create_dask_cluster(qa_cluster_config, logs_dir={logs_value!r})\n"
+        "qa_client = Client(qa_cluster)\n"
+        "qa_cluster_closed = False\n\n"
+        "def close_qa_dask_cluster():\n"
+        "    global qa_cluster_closed\n"
+        "    if not qa_cluster_closed:\n"
+        "        qa_client.close()\n"
+        "        qa_cluster.close()\n"
+        "        qa_cluster_closed = True\n\n"
+        "atexit.register(close_qa_dask_cluster)\n"
+        "qa_client"
+    )
+    return [
+        _markdown_cell("## Distributed execution"),
+        _markdown_cell("Create the configured Dask cluster for lazy QA operations."),
+        _code_cell(source),
+    ]
+
+
+def _dask_cleanup_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if _qa_data_mode(config) != "lazy":
+        return []
+    return [
+        _markdown_cell("## Cleanup"),
+        _markdown_cell("Close the QA Dask client and cluster."),
+        _code_cell("close_qa_dask_cluster()\natexit.unregister(close_qa_dask_cluster)"),
+    ]
 
 
 def _local_data_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
     input_file = _notebook_path(config, config["input_file"])
     input_format = str(config.get("input_format", "parquet")).lower()
-    if input_format == "parquet":
+    mode = _qa_data_mode(config)
+    if mode == "lazy" and input_format == "parquet":
+        read_source = f"df = dd.read_parquet({input_file!r})"
+    elif mode == "lazy" and input_format == "csv":
+        read_source = f"df = dd.read_csv({input_file!r})"
+    elif mode == "lazy" and input_format == "hats":
+        read_source = f"catalog = lsdb.open_catalog({input_file!r})"
+    elif input_format == "parquet":
         read_source = f"df = pd.read_parquet({input_file!r})"
     elif input_format == "csv":
         read_source = f"df = pd.read_csv({input_file!r})"
@@ -424,11 +537,182 @@ def _local_data_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
         read_source = f"catalog = lsdb.open_catalog({input_file!r})\ndf = catalog.compute()"
     else:  # pragma: no cover - guarded by config validation
         raise ValueError("input_format must be one of: parquet, csv, hats.")
+    if mode == "forced_in_memory":
+        read_source = (
+            "import warnings\n"
+            'warnings.warn("force_compute=True: loading the complete QA input into memory.")\n' + read_source
+        )
     return [
         _markdown_cell("## Basic product information"),
         _markdown_cell("Retrieve data from local curated catalog."),
         _code_cell(read_source),
     ]
+
+
+def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if _qa_data_mode(config) != "lazy":
+        if str(config.get("input_format", "parquet")).lower() == "hats":
+            describe_source = (
+                "catalog_statistics = df.describe()\n"
+                "display(HTML(\n"
+                "    '<div style=\"max-height: 520px; overflow: auto;\">'\n"
+                "    + catalog_statistics.to_html(max_rows=None, max_cols=None)\n"
+                "    + '</div>'\n"
+                "))\n"
+                "del catalog_statistics"
+            )
+        else:
+            describe_source = "df.describe()"
+        return [
+            _markdown_cell("First rows."),
+            _code_cell("df.head()"),
+            _markdown_cell("Total number of rows."),
+            _code_cell("len(df)"),
+            _markdown_cell("Total number of columns."),
+            _code_cell("len(df.columns.to_list())"),
+            _markdown_cell("## Basic Statistics "),
+            _code_cell(describe_source),
+        ]
+
+    input_format = str(config.get("input_format", "parquet")).lower()
+    if input_format == "hats":
+        input_file = _notebook_path(config, config["input_file"])
+        head_source = "catalog.head()"
+        row_count_source = (
+            "count_column = catalog.columns[0]\n"
+            f"count_data = lsdb.open_catalog({input_file!r}, columns=[count_column])\n"
+            "n_rows = qa_row_count(count_data)\n"
+            "del count_data\n"
+            "n_rows"
+        )
+        column_count_source = "len(catalog.columns)"
+        describe_source = (
+            "catalog_statistics = catalog.aggregate_column_statistics()\n"
+            "display(HTML(\n"
+            "    '<div style=\"max-height: 520px; overflow: auto;\">'\n"
+            "    + catalog_statistics.to_html(max_rows=None, max_cols=None)\n"
+            "    + '</div>'\n"
+            "))\n"
+            "del catalog_statistics"
+        )
+    else:
+        head_source = "df.head()"
+        row_count_source = "qa_row_count(df)"
+        column_count_source = "len(df.columns)"
+        describe_source = "df.describe().compute()"
+
+    return [
+        _markdown_cell("First rows."),
+        _code_cell(head_source),
+        _markdown_cell("Total number of rows."),
+        _code_cell(row_count_source),
+        _markdown_cell("Total number of columns."),
+        _code_cell(column_count_source),
+        _markdown_cell("## Basic Statistics "),
+        _code_cell(describe_source),
+    ]
+
+
+def _lazy_helpers_source() -> str:
+    return """# Exact partition-wise aggregations used by large-input QA cells.
+def _qa_map_partitions(source, function, *args, meta):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="output of the function must be a DataFrame to generate an LSDB.*",
+            category=RuntimeWarning,
+        )
+        return source.map_partitions(function, *args, meta=meta)
+
+
+def _qa_partition_row_count(partition):
+    return pd.Series([len(partition)], name="count", dtype="int64")
+
+
+def qa_row_count(source):
+    counts = _qa_map_partitions(
+        source,
+        _qa_partition_row_count,
+        meta=pd.Series(name="count", dtype="int64"),
+    ).compute()
+    return int(counts.sum())
+
+
+def _qa_partition_numeric_range(partition, column):
+    values = pd.to_numeric(partition[column], errors="coerce")
+    return pd.Series({"min": values.min(), "max": values.max()}, dtype="float64")
+
+
+def qa_numeric_range(source, column):
+    stats = _qa_map_partitions(
+        source,
+        _qa_partition_numeric_range,
+        column,
+        meta=pd.Series(dtype="float64"),
+    ).compute()
+    return float(stats.loc["min"].min()), float(stats.loc["max"].max())
+
+
+def _qa_partition_histogram1d(partition, column, edges):
+    values = pd.to_numeric(partition[column], errors="coerce").to_numpy()
+    values = values[np.isfinite(values)]
+    counts, _ = np.histogram(values, bins=edges)
+    return pd.Series(counts, index=np.arange(len(counts)), name="count", dtype="int64")
+
+
+def qa_histogram1d(source, column, bins=50, value_range=None):
+    if value_range is None:
+        value_range = qa_numeric_range(source, column)
+    edges = np.linspace(value_range[0], value_range[1], bins + 1)
+    partials = _qa_map_partitions(
+        source,
+        _qa_partition_histogram1d,
+        column,
+        edges,
+        meta=pd.Series(name="count", dtype="int64"),
+    ).compute()
+    counts = partials.groupby(level=0).sum().reindex(range(bins), fill_value=0)
+    return counts.to_numpy(), edges
+
+
+def _qa_partition_histogram2d(partition, ra_column, dec_column, xedges, yedges):
+    ra = pd.to_numeric(partition[ra_column], errors="coerce").to_numpy()
+    dec = pd.to_numeric(partition[dec_column], errors="coerce").to_numpy()
+    x = -np.deg2rad(((ra + 180) % 360) - 180)
+    y = np.deg2rad(dec)
+    valid = np.isfinite(x) & np.isfinite(y)
+    counts, _, _ = np.histogram2d(x[valid], y[valid], bins=[xedges, yedges])
+    return pd.Series(counts.ravel(), name="count", dtype="float64")
+
+
+def qa_histogram2d(source, ra_column, dec_column, xedges, yedges):
+    size = (len(xedges) - 1) * (len(yedges) - 1)
+    partials = _qa_map_partitions(
+        source,
+        _qa_partition_histogram2d,
+        ra_column,
+        dec_column,
+        xedges,
+        yedges,
+        meta=pd.Series(name="count", dtype="float64"),
+    ).compute()
+    counts = partials.groupby(level=0).sum().reindex(range(size), fill_value=0)
+    return counts.to_numpy().reshape(len(xedges) - 1, len(yedges) - 1)
+
+
+def _qa_partition_value_counts(partition, column):
+    return partition[column].value_counts(dropna=False).rename("count")
+
+
+def qa_value_counts(source, column):
+    partials = _qa_map_partitions(
+        source,
+        _qa_partition_value_counts,
+        column,
+        meta=pd.Series(name="count", dtype="int64"),
+    ).compute()
+    return partials.groupby(level=0, dropna=False).sum().sort_index()
+""".rstrip()
 
 
 def _notebook_path(config: dict[str, Any], path: str | Path) -> str:
@@ -459,7 +743,7 @@ def _plot_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
         cells.extend(
             [
                 _markdown_cell("### Redshift distribution\nGlobal redshift distribution.\n"),
-                _code_cell(_hist_source(redshift, default_label="redshift")),
+                _code_cell(_hist_source(config, redshift, default_label="redshift")),
             ]
         )
 
@@ -468,7 +752,7 @@ def _plot_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
         cells.extend(
             [
                 _markdown_cell("### Quality Flags\n\n" + quality.get("description", "")),
-                _code_cell(_quality_source(quality)),
+                _code_cell(_quality_source(config, quality)),
             ]
         )
 
@@ -477,7 +761,7 @@ def _plot_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
         cells.extend(
             [
                 _markdown_cell("### Redshift error distribution\n\nGlobal redshift error distribution."),
-                _code_cell(_hist_source(redshift_error, default_label="redshift error")),
+                _code_cell(_hist_source(config, redshift_error, default_label="redshift error")),
             ]
         )
 
@@ -489,6 +773,28 @@ def _spatial_plot_source(config: dict[str, Any], spatial: dict[str, Any]) -> str
     ra_column = spatial.get("ra_column", "ra")
     dec_column = spatial.get("dec_column", "dec")
     footprint_code = _footprint_plot_source(config, _configured_footprints(spatial))
+    if _qa_data_mode(config) == "lazy":
+        density_source = (
+            _lazy_data_open_source(config, [ra_column, dec_column])
+            + "\nxbins = np.linspace(-np.pi, np.pi, 180)\n"
+            "ybins = np.linspace(-np.pi / 2, np.pi / 2, 90)\n"
+            f"H = qa_histogram2d(plot_data, {ra_column!r}, {dec_column!r}, xbins, ybins)\n"
+            "H = np.ma.masked_where(H == 0, H)\n\n"
+        )
+        cleanup_source = "\ndel plot_data, H\n"
+    else:
+        density_source = (
+            f"x_points = ra_to_mollweide_x(df[{ra_column!r}].values)\n"
+            f"y_points = np.deg2rad(df[{dec_column!r}].values)\n"
+            "valid = np.isfinite(x_points) & np.isfinite(y_points)\n"
+            "x_points = x_points[valid]\n"
+            "y_points = y_points[valid]\n\n"
+            "xbins = np.linspace(-np.pi, np.pi, 180)\n"
+            "ybins = np.linspace(-np.pi / 2, np.pi / 2, 90)\n"
+            "H, xedges, yedges = np.histogram2d(x_points, y_points, bins=[xbins, ybins])\n"
+            "H = np.ma.masked_where(H == 0, H)\n\n"
+        )
+        cleanup_source = ""
 
     return (
         "def ra_to_mollweide_x(ra_deg):\n"
@@ -527,19 +833,11 @@ def _spatial_plot_source(config: dict[str, Any], spatial: dict[str, Any]) -> str
         "                y[start:],\n"
         '                **{k: v for k, v in plot_kwargs.items() if k != "label"},\n'
         "            )\n\n"
-        f"x_points = ra_to_mollweide_x(df[{ra_column!r}].values)\n"
-        f"y_points = np.deg2rad(df[{dec_column!r}].values)\n"
-        "valid = np.isfinite(x_points) & np.isfinite(y_points)\n"
-        "x_points = x_points[valid]\n"
-        "y_points = y_points[valid]\n\n"
-        "xbins = np.linspace(-np.pi, np.pi, 180)\n"
-        "ybins = np.linspace(-np.pi / 2, np.pi / 2, 90)\n"
-        "H, xedges, yedges = np.histogram2d(x_points, y_points, bins=[xbins, ybins])\n"
-        "H = np.ma.masked_where(H == 0, H)\n\n"
+        f"{density_source}"
         "fig = plt.figure(figsize=(16, 8))\n"
         'ax = fig.add_subplot(111, projection="mollweide")\n'
         "mesh = ax.pcolormesh(\n"
-        '    xedges, yedges, H.T, norm=LogNorm(), shading="auto", cmap="viridis", zorder=1\n'
+        '    xbins, ybins, H.T, norm=LogNorm(), shading="auto", cmap="viridis", zorder=1\n'
         ")\n"
         "cbar = fig.colorbar(mesh, ax=ax, pad=0.05)\n"
         'cbar.set_label("Number of objects")\n'
@@ -579,6 +877,7 @@ def _spatial_plot_source(config: dict[str, Any], spatial: dict[str, Any]) -> str
         "if ax.get_legend_handles_labels()[0]:\n"
         '    ax.legend(loc="upper right")\n'
         "plt.show()"
+        f"{cleanup_source}"
     )
 
 
@@ -638,10 +937,45 @@ def _default_footprint_color(index: int) -> str:
     return colors[index % len(colors)]
 
 
-def _hist_source(plot: dict[str, Any], default_label: str) -> str:
+def _lazy_data_open_source(config: dict[str, Any], columns: list[str]) -> str:
+    input_file = _notebook_path(config, config["input_file"])
+    input_format = str(config.get("input_format", "parquet")).lower()
+    if input_format == "parquet":
+        return f"plot_data = dd.read_parquet({input_file!r}, columns={columns!r})"
+    if input_format == "csv":
+        return f"plot_data = dd.read_csv({input_file!r}, usecols={columns!r})"
+    if input_format == "hats":
+        return f"plot_data = lsdb.open_catalog({input_file!r}, columns={columns!r})"
+    raise ValueError("input_format must be one of: parquet, csv, hats.")
+
+
+def _hist_source(config: dict[str, Any], plot: dict[str, Any], default_label: str) -> str:
     column = plot.get("column", default_label)
     value_range = plot.get("range")
     bins = int(plot.get("bins", 50))
+    title = plot.get("title", f"{column} distribution")
+    if _qa_data_mode(config) == "lazy":
+        lazy_xlim = f"plt.xlim({value_range[0]}, {value_range[1]})\n" if value_range else ""
+        return (
+            _lazy_data_open_source(config, [column]) + "\n" + f"hist_counts, hist_edges = qa_histogram1d(\n"
+            f"    plot_data, {column!r}, bins={bins}, value_range={value_range!r}\n"
+            ")\n"
+            "hist_centers = (hist_edges[:-1] + hist_edges[1:]) / 2\n"
+            "plt.figure(figsize=(8, 6))\n"
+            "sns.histplot(\n"
+            "    x=hist_centers,\n"
+            "    weights=hist_counts,\n"
+            "    bins=hist_edges.tolist(),\n"
+            "    kde=False,\n"
+            ")\n"
+            f"plt.xlabel({column!r})\n"
+            'plt.ylabel("Count")\n'
+            f"plt.title({title!r})\n"
+            f"{lazy_xlim}"
+            "plt.tight_layout()\n"
+            "plt.show()\n"
+            "del plot_data, hist_counts, hist_edges, hist_centers"
+        )
     if value_range:
         min_value, max_value = value_range
         data_expr = f"df[(df[{column!r}] >= {min_value}) & (df[{column!r}] <= {max_value})]"
@@ -659,14 +993,33 @@ def _hist_source(plot: dict[str, Any], default_label: str) -> str:
         ")\n"
         f"plt.xlabel({column!r})\n"
         'plt.ylabel("Count")\n'
+        f"plt.title({title!r})\n"
         f"{xlim}"
         "plt.tight_layout()\n"
         "plt.show()"
     )
 
 
-def _quality_source(quality: dict[str, Any]) -> str:
+def _quality_source(config: dict[str, Any], quality: dict[str, Any]) -> str:
     column = quality.get("column", "quality")
+    title = quality.get("title", f"{column} distribution")
+    if _qa_data_mode(config) == "lazy":
+        return (
+            _lazy_data_open_source(config, [column])
+            + "\n"
+            + f"quality_counts = qa_value_counts(plot_data, {column!r})\n"
+            "plt.figure(figsize=(8, 6))\n"
+            "sns.barplot(\n"
+            "    x=quality_counts.index.astype(str),\n"
+            "    y=quality_counts.to_numpy(),\n"
+            ")\n"
+            f"plt.xlabel({column!r})\n"
+            'plt.ylabel("Count")\n'
+            f"plt.title({title!r})\n"
+            "plt.tight_layout()\n"
+            "plt.show()\n"
+            "del plot_data, quality_counts"
+        )
     return (
         "plt.figure(figsize=(8, 6))\n"
         "sns.countplot(\n"
@@ -676,6 +1029,7 @@ def _quality_source(quality: dict[str, Any]) -> str:
         ")\n\n"
         f"plt.xlabel({column!r})\n"
         'plt.ylabel("Count")\n'
+        f"plt.title({title!r})\n"
         "plt.xticks(rotation=0)\n"
         "plt.tight_layout()\n"
         "plt.show()"

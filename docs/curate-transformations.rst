@@ -41,8 +41,33 @@ that arrive as strings or integers but should be compared numerically later.
 
    transformations:
      - type: cast
-       column: VI_quality
-       dtype: float64
+     column: VI_quality
+     dtype: float64
+
+Normalize Signed Components And Sentinels
+-----------------------------------------
+
+Use ``signed_value_sign`` and ``absolute_value`` when a signed numeric component
+must become separate sign and magnitude columns. Use ``replace_values`` for
+explicit missing-value sentinels or other small value mappings.
+
+.. code-block:: yaml
+
+   transformations:
+     - type: signed_value_sign
+       input_column: signed_degrees
+       output_column: degree_sign
+       negative_label: "-"
+       non_negative_label: "+"
+     - type: absolute_value
+       input_column: signed_degrees
+       output_column: degrees
+       dtype: int64
+     - type: replace_values
+       column: magnitude
+       replacements:
+         - from: -1.0
+           to: null
 
 Velocity To Redshift
 --------------------
