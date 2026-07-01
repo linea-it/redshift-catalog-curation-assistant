@@ -114,7 +114,39 @@ Optional Plots
 ``plots.quality``
   Count plot for a configured ``column``. ``description`` is Markdown and can
   contain a table explaining flag values and their source. ``title``
-  optionally overrides the generated plot title.
+  optionally overrides the generated plot title. ``label_rotation`` optionally
+  rotates x-axis category labels by the configured number of degrees and
+  defaults to ``0``.
+
+``plots.categorical``
+  Optional list of generic count plots. Every item requires ``column`` and can
+  set ``title``, Markdown ``description``, and numeric ``label_rotation``. This
+  supports object types, classes, instruments, or other categorical fields
+  without survey-specific configuration keys.
+
+Automatic Quality Sections
+--------------------------
+
+Every notebook includes a scrollable missing-values table with the null count
+and percentage for every column. In lazy mode, counts are reduced exactly by
+partition; the complete catalog is not materialized.
+
+The notebook also reports objective data warnings. These warnings describe
+the input content and do not stop notebook generation:
+
+- an empty catalog;
+- columns that are entirely null;
+- non-finite values in configured RA or Dec columns;
+- RA outside ``[0, 360)`` or Dec outside ``[-90, 90]``;
+- no finite RA/Dec pair for the spatial plot;
+- a configured redshift or redshift-error column with no finite values;
+- no values inside a configured histogram range;
+- a configured quality or categorical column with no non-null categories;
+- a footprint with no curve containing at least two finite points.
+
+Missing files, missing required configuration fields, and unsupported
+footprint schemas remain validation errors because the requested notebook
+cannot be generated reliably from them.
 
 Large Input Behavior
 --------------------
@@ -152,6 +184,8 @@ per partition:
 - redshift and redshift-error distributions compute one-dimensional
   histograms;
 - quality flags compute partitioned value counts.
+- generic categorical plots compute the same partitioned value counts;
+- missing-value and warning diagnostics compute scalar counts by partition.
 
 Only histogram bins or category counts are materialized in memory. The lazy
 plot object and aggregate arrays are deleted at the end of each plot cell so

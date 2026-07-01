@@ -105,7 +105,15 @@ plots:
   quality:
     column: quality
     title: Quality flag distribution
+    # Optional x-axis category label rotation in degrees.
+    label_rotation: 0
     description: |
       | Flag | Description |
       |---|---|
       | 1 | Example quality flag |
+  # Generic count plots for any categorical columns. Each item is optional.
+  categorical:
+    - column: TYPE
+      title: Object type distribution
+      label_rotation: 45
+      description: Optional Markdown displayed before this plot.

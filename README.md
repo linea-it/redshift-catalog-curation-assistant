@@ -62,7 +62,9 @@ redshift-curator qa configs/qa/<catalog>.example.yaml
 catalog. Multi-file schemas are strict by default; `schema_policy: union` can
 preserve optional columns and fill missing values with nulls. QA plots are
 configured independently, so spatial, redshift, redshift-error, and quality
-sections can be included only when supported by the catalog.
+sections can be included only when supported by the catalog. QA notebooks also
+include per-column missing-value statistics, objective data warnings, and
+optional generic categorical count plots.
 
 QA inputs larger than 100 MB use lazy Dask or LSDB partition aggregations by
 default. Only the columns and aggregate bins required by each plot are computed

@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -189,11 +190,32 @@ def _validate_qa_config(config: Any) -> dict[str, Any]:
         value = plots.get(key)
         if value is not None and not isinstance(value, dict):
             raise ValueError(f"plots.{key} must be a mapping when provided.")
+    quality = plots.get("quality")
+    if quality is not None:
+        _validate_label_rotation(quality, "plots.quality")
+    categorical = plots.get("categorical", [])
+    if categorical is None:
+        categorical = []
+    if not isinstance(categorical, list | tuple):
+        raise ValueError("plots.categorical must be a list of mappings when provided.")
+    for index, plot in enumerate(categorical):
+        if not isinstance(plot, dict):
+            raise ValueError(f"plots.categorical[{index}] must be a mapping.")
+        column = plot.get("column")
+        if not isinstance(column, str) or not column.strip():
+            raise ValueError(f"plots.categorical[{index}].column must be a non-empty string.")
+        _validate_label_rotation(plot, f"plots.categorical[{index}]")
     spatial = plots.get("spatial")
     if spatial is not None:
         _validate_footprints(_configured_footprints(spatial))
 
     return config
+
+
+def _validate_label_rotation(plot: dict[str, Any], path: str) -> None:
+    rotation = plot.get("label_rotation")
+    if rotation is not None and (isinstance(rotation, bool) or not isinstance(rotation, int | float)):
+        raise ValueError(f"{path}.label_rotation must be a number when provided.")
 
 
 def _validate_header_image(image: Any, index: int) -> None:
@@ -372,6 +394,7 @@ def _build_notebook(config: dict[str, Any]) -> dict[str, Any]:
     cells.extend(_dask_setup_cells(config))
     cells.extend(_local_data_cells(config))
     cells.extend(_basic_information_cells(config))
+    cells.extend(_data_quality_cells(config))
     cells.extend(_plot_cells(config))
     cells.extend(_dask_cleanup_cells(config))
     for index, cell in enumerate(cells):
@@ -443,12 +466,14 @@ def _imports_source(config: dict[str, Any]) -> str:
         "",
     ]
     plots = config.get("plots") or {}
-    has_plotting = any(plots.get(key) for key in ("spatial", "redshift", "quality", "redshift_error"))
+    has_plotting = any(
+        plots.get(key) for key in ("spatial", "redshift", "quality", "redshift_error", "categorical")
+    )
     if has_plotting:
         imports.extend(["# Plotting", "import matplotlib.pyplot as plt"])
     if plots.get("spatial"):
         imports.append("from matplotlib.colors import LogNorm")
-    if any(plots.get(key) for key in ("redshift", "quality", "redshift_error")):
+    if any(plots.get(key) for key in ("redshift", "quality", "redshift_error", "categorical")):
         imports.append("import seaborn as sns")
     if has_plotting:
         imports.append("")
@@ -567,7 +592,7 @@ def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
             _markdown_cell("First rows."),
             _code_cell("df.head()"),
             _markdown_cell("Total number of rows."),
-            _code_cell("len(df)"),
+            _code_cell("qa_total_rows = len(df)\nqa_total_rows"),
             _markdown_cell("Total number of columns."),
             _code_cell("len(df.columns.to_list())"),
             _markdown_cell("## Basic Statistics "),
@@ -581,9 +606,9 @@ def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
         row_count_source = (
             "count_column = catalog.columns[0]\n"
             f"count_data = lsdb.open_catalog({input_file!r}, columns=[count_column])\n"
-            "n_rows = qa_row_count(count_data)\n"
+            "qa_total_rows = qa_row_count(count_data)\n"
             "del count_data\n"
-            "n_rows"
+            "qa_total_rows"
         )
         column_count_source = "len(catalog.columns)"
         describe_source = (
@@ -597,7 +622,7 @@ def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
         )
     else:
         head_source = "df.head()"
-        row_count_source = "qa_row_count(df)"
+        row_count_source = "qa_total_rows = qa_row_count(df)\nqa_total_rows"
         column_count_source = "len(df.columns)"
         describe_source = "df.describe().compute()"
 
@@ -611,6 +636,213 @@ def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
         _markdown_cell("## Basic Statistics "),
         _code_cell(describe_source),
     ]
+
+
+def _data_quality_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _markdown_cell("## Missing values"),
+        _markdown_cell("Null count and percentage for every catalog column."),
+        _code_cell(_missing_values_source(config)),
+        _markdown_cell("## Data quality warnings"),
+        _markdown_cell(
+            "Objective checks for empty or unusable data, invalid coordinates, and configured plots."
+        ),
+        _code_cell(_warnings_source(config)),
+    ]
+
+
+def _missing_values_source(config: dict[str, Any]) -> str:
+    if _qa_data_mode(config) == "lazy":
+        source_name = "catalog" if str(config.get("input_format", "parquet")).lower() == "hats" else "df"
+        counts_source = f"qa_missing_count_values = qa_missing_counts({source_name})"
+    else:
+        counts_source = 'qa_missing_count_values = df.isna().sum().astype("int64")'
+    return (
+        f"{counts_source}\n"
+        "qa_missing_values = pd.DataFrame({\n"
+        '    "Column": qa_missing_count_values.index,\n'
+        '    "Missing": qa_missing_count_values.to_numpy(),\n'
+        "})\n"
+        'qa_missing_values["Missing %"] = np.where(\n'
+        "    qa_total_rows > 0,\n"
+        '    100 * qa_missing_values["Missing"] / qa_total_rows,\n'
+        "    0.0,\n"
+        ")\n"
+        "display(HTML(\n"
+        "    '<div style=\"max-height: 520px; overflow: auto;\">'\n"
+        '    + qa_missing_values.to_html(index=False, max_rows=None, float_format=lambda x: f"{x:.2f}")\n'
+        "    + '</div>'\n"
+        "))"
+    )
+
+
+def _warning_columns(config: dict[str, Any]) -> list[str]:
+    plots = config.get("plots") or {}
+    columns: list[str] = []
+    spatial = plots.get("spatial")
+    if spatial:
+        columns.extend([spatial.get("ra_column", "ra"), spatial.get("dec_column", "dec")])
+    for key, default in (("redshift", "redshift"), ("redshift_error", "redshift error")):
+        if plots.get(key):
+            columns.append(plots[key].get("column", default))
+    if plots.get("quality"):
+        columns.append(plots["quality"].get("column", "quality"))
+    columns.extend(plot["column"] for plot in plots.get("categorical", []) or [])
+    return list(dict.fromkeys(columns))
+
+
+def _unusable_footprint_warnings(config: dict[str, Any]) -> list[str]:
+    spatial = (config.get("plots") or {}).get("spatial")
+    if not spatial:
+        return []
+    warnings_found = []
+    for index, footprint in enumerate(_configured_footprints(spatial)):
+        path = Path(footprint["path"])
+        data = pd.read_csv(path)
+        footprint_format = footprint.get("format") or _footprint_format(set(data.columns), path=path)
+        if footprint_format == "region_vertices":
+            usable = any(
+                int(mask.sum()) >= 2
+                for mask in [
+                    np.isfinite(pd.to_numeric(group["ra_deg"], errors="coerce")).to_numpy()
+                    & np.isfinite(pd.to_numeric(group["dec_deg"], errors="coerce")).to_numpy()
+                    for _, group in data[data["ring_type"] == "exterior"].groupby("region_id")
+                ]
+            )
+        else:
+            mask = (
+                np.isfinite(pd.to_numeric(data["ra_center"], errors="coerce")).to_numpy()
+                & np.isfinite(pd.to_numeric(data["dec_limit"], errors="coerce")).to_numpy()
+            )
+            usable = int(mask.sum()) >= 2
+        if not usable:
+            label = footprint.get("label", f"Footprint {index + 1}")
+            warnings_found.append(f"{label}: footprint has no curve with at least two finite points.")
+    return warnings_found
+
+
+def _warnings_source(config: dict[str, Any]) -> str:
+    plots = config.get("plots") or {}
+    lines = [
+        "qa_warnings = []",
+        "if qa_total_rows == 0:",
+        '    qa_warnings.append("Catalog is empty.")',
+        "for _, qa_missing_row in qa_missing_values.iterrows():",
+        '    if qa_total_rows > 0 and int(qa_missing_row["Missing"]) == qa_total_rows:',
+        "        qa_warnings.append(f'Column {qa_missing_row[\"Column\"]!r} is entirely null.')",
+    ]
+    mode = _qa_data_mode(config)
+    warning_columns = _warning_columns(config)
+    if mode == "lazy" and warning_columns:
+        lines.extend(
+            [_lazy_data_open_source(config, warning_columns).replace("plot_data", "qa_diagnostic_data")]
+        )
+        source_name = "qa_diagnostic_data"
+    else:
+        source_name = "df"
+
+    spatial = plots.get("spatial")
+    if spatial:
+        ra = spatial.get("ra_column", "ra")
+        dec = spatial.get("dec_column", "dec")
+        if mode == "lazy":
+            lines.append(f"qa_spatial = qa_spatial_diagnostics({source_name}, {ra!r}, {dec!r})")
+        else:
+            lines.extend(
+                [
+                    f"qa_ra = pd.to_numeric(df[{ra!r}], errors='coerce').to_numpy()",
+                    f"qa_dec = pd.to_numeric(df[{dec!r}], errors='coerce').to_numpy()",
+                    "qa_finite_ra = np.isfinite(qa_ra)",
+                    "qa_finite_dec = np.isfinite(qa_dec)",
+                    "qa_spatial = pd.Series({",
+                    '    "nonfinite_ra": (~qa_finite_ra).sum(),',
+                    '    "nonfinite_dec": (~qa_finite_dec).sum(),',
+                    '    "ra_outside_range": (qa_finite_ra & ((qa_ra < 0) | (qa_ra >= 360))).sum(),',
+                    '    "dec_outside_range": (qa_finite_dec & ((qa_dec < -90) | (qa_dec > 90))).sum(),',
+                    '    "valid_pairs": (qa_finite_ra & qa_finite_dec).sum(),',
+                    "})",
+                ]
+            )
+        lines.extend(
+            [
+                'if qa_spatial["nonfinite_ra"]:',
+                f'    qa_warnings.append(f"Column {ra}: '
+                "{int(qa_spatial['nonfinite_ra'])} non-finite coordinate values.\")",
+                'if qa_spatial["nonfinite_dec"]:',
+                f'    qa_warnings.append(f"Column {dec}: '
+                "{int(qa_spatial['nonfinite_dec'])} non-finite coordinate values.\")",
+                'if qa_spatial["ra_outside_range"]:',
+                f'    qa_warnings.append(f"Column {ra}: '
+                "{int(qa_spatial['ra_outside_range'])} values outside [0, 360).\")",
+                'if qa_spatial["dec_outside_range"]:',
+                f'    qa_warnings.append(f"Column {dec}: '
+                "{int(qa_spatial['dec_outside_range'])} values outside [-90, 90].\")",
+                'if qa_spatial["valid_pairs"] == 0:',
+                '    qa_warnings.append("Spatial plot has no finite RA/Dec pairs.")',
+            ]
+        )
+
+    for key, default in (("redshift", "redshift"), ("redshift_error", "redshift error")):
+        plot = plots.get(key)
+        if not plot:
+            continue
+        column = plot.get("column", default)
+        value_range = plot.get("range")
+        variable = f"qa_numeric_{key}"
+        if mode == "lazy":
+            lines.append(f"{variable} = qa_numeric_diagnostics({source_name}, {column!r}, {value_range!r})")
+        else:
+            lines.extend(
+                [
+                    f"qa_values = pd.to_numeric(df[{column!r}], errors='coerce').to_numpy()",
+                    "qa_finite = np.isfinite(qa_values)",
+                    f"{variable} = pd.Series({{'finite': qa_finite.sum(), 'in_range': qa_finite.sum()}})",
+                ]
+            )
+            if value_range is not None:
+                lines.append(
+                    f"{variable}['in_range'] = (qa_finite & (qa_values >= {value_range[0]!r}) "
+                    f"& (qa_values <= {value_range[1]!r})).sum()"
+                )
+        lines.extend(
+            [
+                f"if {variable}['finite'] == 0:",
+                f'    qa_warnings.append("Configured numeric column {column!r} has no finite values.")',
+            ]
+        )
+        if value_range is not None:
+            lines.extend(
+                [
+                    f"if {variable}['finite'] > 0 and {variable}['in_range'] == 0:",
+                    f'    qa_warnings.append("Column {column!r} has no values inside '
+                    f'histogram range {value_range!r}.")',
+                ]
+            )
+
+    categorical = ([plots["quality"]] if plots.get("quality") else []) + list(
+        plots.get("categorical", []) or []
+    )
+    for plot in categorical:
+        column = plot.get("column", "quality")
+        lines.extend(
+            [
+                "if qa_total_rows == 0 or "
+                f"int(qa_missing_count_values.get({column!r}, qa_total_rows)) == qa_total_rows:",
+                f'    qa_warnings.append("Configured categorical column {column!r} '
+                'has no non-null categories.")',
+            ]
+        )
+    for warning in _unusable_footprint_warnings(config):
+        lines.append(f"qa_warnings.append({warning!r})")
+    if mode == "lazy" and warning_columns:
+        lines.append("del qa_diagnostic_data")
+    lines.extend(
+        [
+            'qa_warning_text = "\\n".join(f"- {warning}" for warning in qa_warnings)',
+            'display(Markdown(qa_warning_text if qa_warnings else "_No objective QA warnings._"))',
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _lazy_helpers_source() -> str:
@@ -638,6 +870,70 @@ def qa_row_count(source):
     return int(counts.sum())
 
 
+def _qa_partition_missing_counts(partition):
+    return partition.isna().sum().rename("missing").astype("int64")
+
+
+def qa_missing_counts(source):
+    partials = _qa_map_partitions(
+        source,
+        _qa_partition_missing_counts,
+        meta=pd.Series(name="missing", dtype="int64"),
+    ).compute()
+    return partials.groupby(level=0).sum()
+
+
+def _qa_partition_numeric_diagnostics(partition, column, value_range):
+    values = pd.to_numeric(partition[column], errors="coerce").to_numpy()
+    finite = np.isfinite(values)
+    in_range = finite
+    if value_range is not None:
+        in_range = finite & (values >= value_range[0]) & (values <= value_range[1])
+    return pd.Series(
+        {"finite": finite.sum(), "in_range": in_range.sum()}, dtype="int64"
+    )
+
+
+def qa_numeric_diagnostics(source, column, value_range=None):
+    partials = _qa_map_partitions(
+        source,
+        _qa_partition_numeric_diagnostics,
+        column,
+        value_range,
+        meta=pd.Series(dtype="int64"),
+    ).compute()
+    return partials.groupby(level=0).sum()
+
+
+def _qa_partition_spatial_diagnostics(partition, ra_column, dec_column):
+    ra = pd.to_numeric(partition[ra_column], errors="coerce").to_numpy()
+    dec = pd.to_numeric(partition[dec_column], errors="coerce").to_numpy()
+    finite_ra = np.isfinite(ra)
+    finite_dec = np.isfinite(dec)
+    valid = finite_ra & finite_dec
+    return pd.Series(
+        {
+            "nonfinite_ra": (~finite_ra).sum(),
+            "nonfinite_dec": (~finite_dec).sum(),
+            "ra_outside_range": (finite_ra & ((ra < 0) | (ra >= 360))).sum(),
+            "dec_outside_range": (finite_dec & ((dec < -90) | (dec > 90))).sum(),
+            "valid_pairs": valid.sum(),
+        },
+        dtype="int64",
+    )
+
+
+def qa_spatial_diagnostics(source, ra_column, dec_column):
+    partials = _qa_map_partitions(
+        source,
+        _qa_partition_spatial_diagnostics,
+        ra_column,
+        dec_column,
+        meta=pd.Series(dtype="int64"),
+    ).compute()
+    return partials.groupby(level=0).sum()
+
+
 def _qa_partition_numeric_range(partition, column):
     values = pd.to_numeric(partition[column], errors="coerce")
     return pd.Series({"min": values.min(), "max": values.max()}, dtype="float64")
@@ -663,6 +959,10 @@ def _qa_partition_histogram1d(partition, column, edges):
 def qa_histogram1d(source, column, bins=50, value_range=None):
     if value_range is None:
         value_range = qa_numeric_range(source, column)
+    if not np.all(np.isfinite(value_range)):
+        value_range = (0.0, 1.0)
+    elif value_range[0] == value_range[1]:
+        value_range = (value_range[0] - 0.5, value_range[1] + 0.5)
     edges = np.linspace(value_range[0], value_range[1], bins + 1)
     partials = _qa_map_partitions(
         source,
@@ -765,6 +1065,15 @@ def _plot_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
             ]
         )
 
+    categorical = plots.get("categorical", []) or []
+    if categorical:
+        cells.append(_markdown_cell("### Categorical distributions"))
+        for plot in categorical:
+            description = plot.get("description", "")
+            if description:
+                cells.append(_markdown_cell(description))
+            cells.append(_code_cell(_quality_source(config, plot)))
+
     return cells
 
 
@@ -836,11 +1145,14 @@ def _spatial_plot_source(config: dict[str, Any], spatial: dict[str, Any]) -> str
         f"{density_source}"
         "fig = plt.figure(figsize=(16, 8))\n"
         'ax = fig.add_subplot(111, projection="mollweide")\n'
-        "mesh = ax.pcolormesh(\n"
-        '    xbins, ybins, H.T, norm=LogNorm(), shading="auto", cmap="viridis", zorder=1\n'
-        ")\n"
-        "cbar = fig.colorbar(mesh, ax=ax, pad=0.05)\n"
-        'cbar.set_label("Number of objects")\n'
+        "if H.count():\n"
+        "    mesh = ax.pcolormesh(\n"
+        '        xbins, ybins, H.T, norm=LogNorm(), shading="auto", cmap="viridis", zorder=1\n'
+        "    )\n"
+        "    cbar = fig.colorbar(mesh, ax=ax, pad=0.05)\n"
+        '    cbar.set_label("Number of objects")\n'
+        "else:\n"
+        '    ax.text(0.5, 0.5, "No finite coordinate pairs", transform=ax.transAxes, ha="center")\n'
         "ax.grid(False)\n\n"
         "dec_grid = np.deg2rad(np.linspace(-90, 90, 500))\n"
         "for grid_ra_deg in np.arange(-150, 181, 30):\n"
@@ -1003,36 +1315,47 @@ def _hist_source(config: dict[str, Any], plot: dict[str, Any], default_label: st
 def _quality_source(config: dict[str, Any], quality: dict[str, Any]) -> str:
     column = quality.get("column", "quality")
     title = quality.get("title", f"{column} distribution")
+    label_rotation = quality.get("label_rotation", 0)
     if _qa_data_mode(config) == "lazy":
         return (
             _lazy_data_open_source(config, [column])
             + "\n"
             + f"quality_counts = qa_value_counts(plot_data, {column!r})\n"
+            "quality_counts = quality_counts[quality_counts.index.notna()]\n"
             "plt.figure(figsize=(8, 6))\n"
-            "sns.barplot(\n"
-            "    x=quality_counts.index.astype(str),\n"
-            "    y=quality_counts.to_numpy(),\n"
-            ")\n"
+            "if quality_counts.empty:\n"
+            '    plt.text(0.5, 0.5, "No non-null categories", ha="center")\n'
+            "else:\n"
+            "    sns.barplot(\n"
+            "        x=quality_counts.index.astype(str),\n"
+            "        y=quality_counts.to_numpy(),\n"
+            "    )\n"
             f"plt.xlabel({column!r})\n"
             'plt.ylabel("Count")\n'
             f"plt.title({title!r})\n"
+            f"plt.xticks(rotation={label_rotation!r})\n"
             "plt.tight_layout()\n"
             "plt.show()\n"
             "del plot_data, quality_counts"
         )
     return (
         "plt.figure(figsize=(8, 6))\n"
-        "sns.countplot(\n"
-        "    data=df,\n"
-        f"    x={column!r},\n"
-        f"    order=sorted(df[{column!r}].dropna().unique()),\n"
-        ")\n\n"
+        f"quality_order = sorted(df[{column!r}].dropna().unique(), key=str)\n"
+        "if quality_order:\n"
+        "    sns.countplot(\n"
+        "        data=df,\n"
+        f"        x={column!r},\n"
+        "        order=quality_order,\n"
+        "    )\n"
+        "else:\n"
+        '    plt.text(0.5, 0.5, "No non-null categories", ha="center")\n\n'
         f"plt.xlabel({column!r})\n"
         'plt.ylabel("Count")\n'
         f"plt.title({title!r})\n"
-        "plt.xticks(rotation=0)\n"
+        f"plt.xticks(rotation={label_rotation!r})\n"
         "plt.tight_layout()\n"
-        "plt.show()"
+        "plt.show()\n"
+        "del quality_order"
     )
 
 

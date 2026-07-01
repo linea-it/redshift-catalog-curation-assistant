@@ -323,6 +323,25 @@ def test_qa_config_rejects_unsupported_footprint_columns(tmp_path):
         )
 
 
+def test_qa_warns_when_valid_footprint_schema_has_no_usable_curve(tmp_path):
+    """Ensure insufficient footprint points produce a notebook warning."""
+    footprint = tmp_path / "short_footprint.csv"
+    footprint.write_text("region_id,ring_type,vertex_id,ra_deg,dec_deg\n0,exterior,0,10.0,-1.0\n")
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "input_file": "catalog.parquet",
+            "output_notebook": str(output_notebook),
+            "plots": {"spatial": {"footprints": [{"path": str(footprint), "label": "Short curve"}]}},
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+    assert "Short curve: footprint has no curve with at least two finite points." in sources
+
+
 def test_qa_config_rejects_more_than_two_header_images():
     """Ensure the notebook header stays constrained to at most two configured images."""
     with pytest.raises(ValueError, match="at most two images"):
@@ -338,6 +357,89 @@ def test_qa_config_requires_local_input_file():
     """Ensure QA notebook generation is not configured around remote product names."""
     with pytest.raises(ValueError, match="requires input_file"):
         dry_run_qa_config({"title": "Missing input"})
+
+
+@pytest.mark.parametrize(
+    ("categorical", "message"),
+    [
+        ({"column": "TYPE"}, "must be a list"),
+        (["TYPE"], r"categorical\[0\] must be a mapping"),
+        ([{}], r"categorical\[0\]\.column"),
+    ],
+)
+def test_qa_config_validates_categorical_plots(categorical, message):
+    """Ensure generic categorical plots have an unambiguous list schema."""
+    with pytest.raises(ValueError, match=message):
+        dry_run_qa_config(
+            {
+                "input_file": "curated/catalog.parquet",
+                "plots": {"categorical": categorical},
+            }
+        )
+
+
+@pytest.mark.parametrize("rotation", ["45", True, [45]])
+def test_qa_config_rejects_invalid_categorical_label_rotation(rotation):
+    """Ensure category label rotation is an explicit numeric angle."""
+    with pytest.raises(ValueError, match="label_rotation must be a number"):
+        dry_run_qa_config(
+            {
+                "input_file": "curated/catalog.parquet",
+                "plots": {"categorical": [{"column": "TYPE", "label_rotation": rotation}]},
+            }
+        )
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_qa_generates_missing_values_warnings_and_categorical_plots(tmp_path, lazy):
+    """Ensure new QA sections generate valid code in both access modes."""
+    input_file = tmp_path / "catalog.parquet"
+    pd.DataFrame(
+        {
+            "ra": [np.nan, 400.0],
+            "dec": [np.nan, -100.0],
+            "z": [10.0, np.nan],
+            "quality": [np.nan, np.nan],
+            "TYPE": ["GALAXY", None],
+            "empty": [np.nan, np.nan],
+        }
+    ).to_parquet(input_file)
+    suffix = "lazy" if lazy else "memory"
+    output_notebook = tmp_path / f"qa-{suffix}.ipynb"
+
+    generate_qa_notebook(
+        {
+            "title": f"Warnings {suffix}",
+            "input_file": str(input_file),
+            "output_notebook": str(output_notebook),
+            "large_input_threshold_mb": 0.000001 if lazy else 100,
+            "dask_cluster": {
+                "name": "local",
+                "args": {"processes": False, "n_workers": 1, "threads_per_worker": 1},
+            },
+            "plots": {
+                "spatial": {"ra_column": "ra", "dec_column": "dec"},
+                "redshift": {"column": "z", "range": [0, 1]},
+                "quality": {"column": "quality", "label_rotation": 90},
+                "categorical": [{"column": "TYPE", "title": "Object types", "label_rotation": 45}],
+            },
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    code_sources = ["".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"]
+    sources = "\n".join(code_sources)
+    for index, source in enumerate(code_sources):
+        compile(source, f"qa-cell-{index}", "exec")
+    assert "Missing %" in sources
+    assert "is entirely null" in sources
+    assert "values outside [0, 360)" in sources
+    assert "values outside [-90, 90]" in sources
+    assert "has no values inside histogram range [0, 1]" in sources
+    assert "has no non-null categories" in sources
+    assert "Object types" in sources
+    assert "plt.xticks(rotation=90)" in sources
+    assert "plt.xticks(rotation=45)" in sources
 
 
 def test_generate_qa_notebook_uses_lazy_partition_aggregations_for_large_parquet(tmp_path):
@@ -473,3 +575,37 @@ def test_lazy_histogram_derives_range_without_materializing_values():
 
     assert counts.tolist() == [1, 1, 1]
     assert edges.tolist() == pytest.approx([0.1, 0.2, 0.3, 0.4])
+
+
+def test_lazy_quality_helpers_aggregate_missing_and_diagnostics():
+    """Ensure lazy warning inputs are exact partition-wise reductions."""
+    import dask.dataframe as dd
+
+    from redshift_catalog_curation_assistant.qa.qa import _lazy_helpers_source
+
+    namespace = {"np": np, "pd": pd, "warnings": warnings}
+    exec(_lazy_helpers_source(), namespace)
+    source = dd.from_pandas(
+        pd.DataFrame(
+            {
+                "ra": [10.0, np.nan, 361.0],
+                "dec": [0.0, np.inf, -91.0],
+                "z": [0.1, np.nan, 4.0],
+            }
+        ),
+        npartitions=2,
+    )
+
+    missing = namespace["qa_missing_counts"](source)
+    spatial = namespace["qa_spatial_diagnostics"](source, "ra", "dec")
+    numeric = namespace["qa_numeric_diagnostics"](source, "z", [0, 1])
+
+    assert missing.to_dict() == {"dec": 0, "ra": 1, "z": 1}
+    assert spatial.to_dict() == {
+        "dec_outside_range": 1,
+        "nonfinite_dec": 1,
+        "nonfinite_ra": 1,
+        "ra_outside_range": 1,
+        "valid_pairs": 2,
+    }
+    assert numeric.to_dict() == {"finite": 2, "in_range": 1}
