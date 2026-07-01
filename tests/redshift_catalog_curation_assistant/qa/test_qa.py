@@ -391,13 +391,14 @@ def test_run_qa_config_can_execute_notebook_and_export_html(tmp_path, monkeypatc
     import nbconvert
 
     class FakeNotebookClient:
-        def __init__(self, notebook, timeout, kernel_name, resources):
+        def __init__(self, notebook, timeout, kernel_name, resources, km=None):
             self.notebook = notebook
             self.timeout = timeout
             self.kernel_name = kernel_name
             self.resources = resources
+            self.km = km
 
-        def execute(self):
+        def execute(self, **kwargs):
             self.notebook["cells"][0]["source"] = ["# Executed QA\n"]
 
     class FakeHTMLExporter:

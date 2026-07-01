@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,7 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
 
     try:
         import nbformat
+        from jupyter_client import AsyncKernelManager
         from nbclient import NotebookClient
         from nbconvert import HTMLExporter
     except ImportError as exc:  # pragma: no cover - dependency metadata should prevent this
@@ -81,13 +83,30 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
         ) from exc
 
     notebook = nbformat.read(output_notebook, as_version=4)
-    client = NotebookClient(
-        notebook,
-        timeout=validated.get("html_execution_timeout", 600),
-        kernel_name=validated.get("html_kernel_name", "python3"),
-        resources={"metadata": {"path": str(output_notebook.parent.resolve())}},
-    )
-    client.execute()
+    with tempfile.TemporaryDirectory(prefix="qa-ipython-") as ipython_dir:
+        execution_env = os.environ.copy()
+        execution_env["IPYTHONDIR"] = ipython_dir
+
+        client = NotebookClient(
+            notebook,
+            km=AsyncKernelManager(kernel_name=validated.get("html_kernel_name", "python3")),
+            timeout=validated.get("html_execution_timeout", 600),
+            kernel_name=validated.get("html_kernel_name", "python3"),
+            resources={"metadata": {"path": str(output_notebook.parent.resolve())}},
+        )
+        client.km.transport = "ipc"
+        try:
+            client.execute(env=execution_env)
+        except Exception as exc:
+            if "ipc" not in str(exc).lower():
+                raise
+            client = NotebookClient(
+                notebook,
+                timeout=validated.get("html_execution_timeout", 600),
+                kernel_name=validated.get("html_kernel_name", "python3"),
+                resources={"metadata": {"path": str(output_notebook.parent.resolve())}},
+            )
+            client.execute(env=execution_env)
 
     body, _ = HTMLExporter().from_notebook_node(notebook)
     output_html.write_text(body, encoding="utf-8")
