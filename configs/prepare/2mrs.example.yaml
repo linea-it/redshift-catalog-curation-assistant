@@ -1,7 +1,7 @@
 input_files:
-  - tests/data/raw/2mrs_1175_done_sample.fits
-  - tests/data/raw/2mrs_extra_done_sample.fits
-output_dir: tests/data/prepared/2mrs.parquet
+  - tests/data/raw/2mrs_main_sample.fits
+  - tests/data/raw/2mrs_extra_sample.fits
+output_dir: reports/prepared/2mrs.parquet
 fits_hdu: 1
 schema_policy: union
 output_mode: single

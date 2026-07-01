@@ -11,7 +11,7 @@ Minimal Example
 .. code-block:: yaml
 
    input_file: tests/data/raw/desi_deep_pilot_sample.fits
-   output_dir: outputs/prepared/desi_deep_pilot.parquet
+   output_dir: reports/prepared/desi_deep_pilot.parquet
    fits_hdu: 1
    overwrite: true
 
@@ -191,8 +191,8 @@ Prepare HATS directly from CLI options:
 .. code-block:: console
 
    redshift-curator prepare \
-     --path tests/data/raw/synthetic_redshift_catalog.csv \
-     --output-dir outputs/prepared/synthetic_hats \
+     --path tests/data/raw/synthetic_sample.csv \
+     --output-dir reports/prepared/synthetic_hats \
      --output-format hats \
      --hats-ra-column ra \
      --hats-dec-column dec \
@@ -204,8 +204,8 @@ Validate a prepare config or CLI invocation without writing output:
 
    redshift-curator prepare configs/prepare/synthetic.example.yaml --dry-run
    redshift-curator prepare \
-     --path tests/data/raw/synthetic_redshift_catalog.csv \
-     --output-dir outputs/prepared/synthetic.parquet \
+     --path tests/data/raw/synthetic_sample.csv \
+     --output-dir reports/prepared/synthetic.parquet \
      --dry-run
 
 Prepare several files as one logical catalog:
@@ -215,7 +215,7 @@ Prepare several files as one logical catalog:
    input_files:
      - path/to/catalog_part0.csv
      - path/to/catalog_part1.csv
-   output_dir: outputs/prepared/catalog.parquet
+   output_dir: reports/prepared/catalog.parquet
    schema_policy: union
    overwrite: true
    output_mode: auto
@@ -226,7 +226,6 @@ three optional columns:
 .. code-block:: console
 
    redshift-curator prepare configs/prepare/2mrs.example.yaml
-   redshift-curator inspect configs/inspect/2mrs.example.yaml
    redshift-curator curate configs/curate/2mrs.example.yaml
    redshift-curator qa configs/qa/2mrs.example.yaml
 

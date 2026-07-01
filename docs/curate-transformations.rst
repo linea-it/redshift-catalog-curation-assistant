@@ -22,7 +22,7 @@ Use this when every output row should carry the survey/source name.
    transformations:
      - type: add_constant_column
        name: survey_name
-       value: SDSS_DR19
+       value: EXAMPLE_SURVEY
 
 Cast A Column
 -------------
@@ -77,8 +77,8 @@ error ``EV`` in km/s to redshift and redshift error.
 
 .. code-block:: yaml
 
-   input_file: tests/data/prepared/2mrs.parquet
-   output_dir: tests/data/curated/2mrs.parquet
+   input_file: reports/prepared/2mrs.parquet
+   output_dir: reports/curated/2mrs.parquet
 
    coordinates:
      ra_column: RA
@@ -104,7 +104,7 @@ The sign of Dec is taken from the degree component.
 .. code-block:: yaml
 
    input_file: tests/data/raw/2dfgrs_sample.idz.gz
-   output_dir: outputs/curated/2dfgrs.parquet
+   output_dir: reports/curated/2dfgrs.parquet
 
    column_selection:
      - serial
@@ -143,7 +143,7 @@ by Astropy. The 6dFGS sample uses RA as hourangle and Dec as degrees.
 .. code-block:: yaml
 
    input_file: tests/data/raw/6dfgs_sample.csv.gz
-   output_dir: outputs/curated/6dfgs.parquet
+   output_dir: reports/curated/6dfgs.parquet
 
    column_selection:
      - SPECID

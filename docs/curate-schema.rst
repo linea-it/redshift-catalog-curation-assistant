@@ -11,8 +11,8 @@ Minimal Example
 
 .. code-block:: yaml
 
-   input_file: tests/data/raw/synthetic_redshift_catalog.csv
-   output_dir: outputs/curated/synthetic.parquet
+   input_file: tests/data/raw/synthetic_sample.csv
+   output_dir: reports/curated/synthetic.parquet
    overwrite: true
 
    column_selection:
@@ -280,7 +280,7 @@ redshift validation.
 
      - type: add_constant_column
        name: survey_name
-       value: SDSS_DR19
+       value: EXAMPLE_SURVEY
 
 ``cast``
   Casts an existing column using pandas/Dask ``astype``.

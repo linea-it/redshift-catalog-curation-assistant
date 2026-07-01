@@ -1,4 +1,4 @@
-input_file: tests/data/raw/synthetic_redshift_catalog.csv
+input_file: tests/data/raw/synthetic_sample.csv
 output_dir: reports/curated/synthetic.parquet
 overwrite: true
 

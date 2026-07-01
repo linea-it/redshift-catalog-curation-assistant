@@ -11,7 +11,7 @@ Minimal Example
 .. code-block:: yaml
 
    title: Example Catalog
-   input_file: tests/data/curated/example.parquet
+   input_file: reports/curated/example.parquet
    input_format: parquet
    output_notebook: reports/qa/example.ipynb
    include_absolute_input_path: false
@@ -222,7 +222,7 @@ the error message.
 ------------
 
 ``configs/qa/2mrs.example.yaml`` reads the curated union of both 2MRS FITS
-files. It demonstrates two header images, two footprint curves, relative input
-paths, automatic run date, spatial and redshift distributions, and the optional
-redshift-error distribution. It intentionally omits a quality plot because the
-real use case does not define a redshift-quality flag for that section.
+files. It demonstrates relative input paths, an automatic run date, catalog
+provenance, spatial and redshift distributions, and the optional redshift-error
+distribution. It intentionally omits header images, footprints, and a quality
+plot because those elements are not required by the example.

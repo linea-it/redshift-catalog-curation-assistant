@@ -1,4 +1,4 @@
-input_file: tests/data/raw/synthetic_redshift_catalog.csv
+input_file: tests/data/raw/synthetic_sample.csv
 survey_name: SYNTHETIC_REDSHIFT
 unique_limit: 10
 

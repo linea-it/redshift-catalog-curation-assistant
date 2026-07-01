@@ -3,16 +3,9 @@ subtitle: Basic dataset characterization
 output_notebook: reports/qa/2mrs.ipynb
 generate_html: true
 output_html: reports/qa/2mrs.html
-input_file: tests/data/curated/2mrs.parquet
+input_file: reports/curated/2mrs.parquet
 input_format: parquet
 include_absolute_input_path: false
-
-header_images:
-  - url: https://www.linea.org.br/brand/linea-logo-color.svg
-    width: 100
-    style: "padding: 40px"
-  - url: https://cdn2.webdamdb.com/1280_c3PXjCZbPM23.png
-    width: 180
 
 summary:
   - "**Original files:** `2mrs_1175_done.fits` and `2mrs_extra_done.fits`"
@@ -22,20 +15,12 @@ summary:
   - "**Manipulations:** Concatenation of files. Computation of redshift columns from the velocity columns. Inserting the `survey_name` column."
 
 acknowledgments:
-  - This notebook was supported by resources supplied by the Laboratório Interinstitucional de e-Astronomia (LIneA).
   - This work uses data products produced by the OIR Telescope Data Center, supported by the Smithsonian Astrophysical Observatory.
 
 plots:
   spatial:
     ra_column: RA
     dec_column: DEC
-    footprints:
-      - path: tests/data/curves/rubin_dp2_footprint.csv
-        label: Rubin DP2 footprint
-        color: red
-      - path: tests/data/curves/rubin_footprint.csv
-        label: Rubin footprint
-        color: orange
   redshift:
     column: redshift
     range: [-0.05, 0.3]

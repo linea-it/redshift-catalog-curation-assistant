@@ -12,6 +12,10 @@ from redshift_catalog_curation_assistant.qa import dry_run_qa_config, generate_q
 def test_generate_qa_notebook_reads_local_parquet_and_uses_configured_header_images(tmp_path):
     """Ensure QA notebook generation is driven by local input and configured image attributes."""
     output_notebook = tmp_path / "qa.ipynb"
+    first_logo = tmp_path / "first.svg"
+    second_logo = tmp_path / "second.png"
+    first_logo.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    second_logo.write_bytes(b"fixture")
 
     generated = generate_qa_notebook(
         {
@@ -20,12 +24,12 @@ def test_generate_qa_notebook_reads_local_parquet_and_uses_configured_header_ima
             "output_notebook": str(output_notebook),
             "header_images": [
                 {
-                    "path": "tests/data/images/logo_linea.svg",
+                    "path": str(first_logo),
                     "width": 100,
                     "style": "padding: 40px",
                 },
                 {
-                    "path": "tests/data/images/logo_rubin.png",
+                    "path": str(second_logo),
                     "width": 180,
                 },
             ],
@@ -43,9 +47,9 @@ def test_generate_qa_notebook_reads_local_parquet_and_uses_configured_header_ima
     header = "".join(notebook["cells"][0]["source"])
     sources = ["".join(cell["source"]) for cell in notebook["cells"]]
 
-    assert '<img align="left" src = "tests/data/images/logo_linea.svg" width=100' in header
+    assert f'<img align="left" src = "{first_logo}" width=100' in header
     assert 'style="padding: 40px"' in header
-    assert '<img align="left" src = "tests/data/images/logo_rubin.png" width=180>' in header
+    assert f'<img align="left" src = "{second_logo}" width=180>' in header
     assert "df = pd.read_parquet('" in "\n".join(sources)
     assert "curated/c3r2_dr3" in "\n".join(sources)
     assert "from pzserver import PzServer" not in "\n".join(sources)
@@ -520,7 +524,7 @@ def test_generate_qa_notebook_force_compute_overrides_large_input_mode(tmp_path)
 def test_generate_qa_notebook_uses_public_lazy_hats_operations(tmp_path):
     """Ensure large HATS notebooks use public LSDB projection and aggregation APIs."""
     output_notebook = tmp_path / "qa.ipynb"
-    hats_path = "tests/data/raw/elaisfbmc_collection"
+    hats_path = "tests/data/raw/elaisfbmc_sample"
 
     generate_qa_notebook(
         {

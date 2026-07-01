@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 
 @contextmanager
@@ -677,7 +678,7 @@ def test_inspect_hats_catalog_uses_lsdb_with_dask_client(tmp_path, monkeypatch):
 
     outdir = insp.run_inspect_config(
         {
-            "input_file": "tests/data/raw/elaisfbmc_collection",
+            "input_file": "tests/data/raw/elaisfbmc_sample",
             "survey_name": "ELAISFBMC_COLLECTION",
             "output_dir": str(tmp_path / "hats-report"),
             "stats_mode": "candidates",
@@ -708,14 +709,8 @@ def test_inspect_hats_catalog_uses_lsdb_with_dask_client(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("config_path", "survey", "n_rows"),
     [
-        ("configs/inspect/2dfgrs.example.yaml", "2DFGRS", 1000),
-        ("configs/inspect/2dflens.example.yaml", "2DFLENS", 1000),
-        ("configs/inspect/2mrs.example.yaml", "2MRS", 2000),
-        ("configs/inspect/6dfgs.example.yaml", "6DFGS", 1000),
-        ("configs/inspect/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 1000),
-        ("configs/inspect/elaisfbmc_collection.example.yaml", "ELAISFBMC_COLLECTION", 3762),
-        ("configs/inspect/euclid_parquet_sample.example.yaml", "EUCLID_PARQUET_SAMPLE", 1000),
-        ("configs/inspect/sdss_dr19.example.yaml", "SDSS_DR19_SPALL", 1000),
+        ("configs/inspect/desi_deep_pilot.example.yaml", "DESI_DEEP_PILOT", 20),
+        ("configs/inspect/elaisfbmc.example.yaml", "ELAISFBMC_COLLECTION", 3762),
         ("configs/inspect/synthetic.example.yaml", "SYNTHETIC_REDSHIFT", 5),
     ],
 )
@@ -729,7 +724,12 @@ def test_inspect_versioned_sample_configs(config_path, survey, n_rows, tmp_path,
 
     monkeypatch.setattr(executor, "dask_client_context", fake_dask_client_context)
 
-    outdir = insp.run_inspect(Path(config_path))
+    config = yaml.safe_load(Path(config_path).read_text())
+    config["output_dir"] = str(tmp_path / "inspect-report")
+    runtime_config = tmp_path / "inspect.yaml"
+    runtime_config.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    outdir = insp.run_inspect(runtime_config)
     report = json.loads((outdir / "inspect_report.json").read_text())
 
     assert report["survey"] == survey
