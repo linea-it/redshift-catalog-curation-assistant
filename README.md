@@ -12,8 +12,8 @@ This project was created following the LINCC Frameworks Python Project Template
 A local-first CLI for technical curation of heterogeneous redshift catalogs.
 
 The tool helps a human curator inspect catalog structure, prepare local inputs
-as Parquet or HATS, and apply explicit curation rules. It does not make
-scientific decisions automatically.
+as Parquet or HATS, apply explicit curation rules, and generate reproducible QA
+notebooks. It does not make scientific decisions automatically.
 
 ## Install
 
@@ -30,6 +30,7 @@ redshift-curator inspect configs/inspect/synthetic.example.yaml
 redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
 redshift-curator prepare configs/prepare/desi_deep_pilot.example.yaml
 redshift-curator curate configs/curate/synthetic.example.yaml
+redshift-curator qa configs/qa/c3r2_dr3.example.yaml
 ```
 
 Functional commands:
@@ -39,26 +40,44 @@ Functional commands:
 - `prepare`: normalize raw inputs to Parquet datasets or HATS collections.
 - `curate`: apply explicit curation rules and write Parquet datasets or HATS
   collections.
+- `qa`: generate a local QA notebook and optionally execute it to produce HTML.
 
-Planned command names are also present for later phases: `qa`,
-`validate-flags`, and `run`.
+Planned command names are also present for later phases: `validate-flags` and
+`run`.
 
 ## Current Workflow
 
 For small catalogs, inspect and curate can read supported raw files directly.
-For large or repeated workflows, prepare first:
+For large, multi-file, or repeated workflows, prepare first. The full local
+workflow is:
 
 ```bash
-redshift-curator prepare configs/prepare/sdss_dr19.example.yaml
-redshift-curator inspect --path reports/prepared/sdss_dr19.parquet
-redshift-curator curate configs/curate/sdss_dr19.example.yaml
+redshift-curator prepare configs/prepare/<catalog>.example.yaml
+redshift-curator inspect configs/inspect/<catalog>.example.yaml
+redshift-curator curate configs/curate/<catalog>.example.yaml
+redshift-curator qa configs/qa/<catalog>.example.yaml
 ```
+
+`prepare` accepts one file or a list of files representing one logical
+catalog. Multi-file schemas are strict by default; `schema_policy: union` can
+preserve optional columns and fill missing values with nulls. QA plots are
+configured independently, so spatial, redshift, redshift-error, and quality
+sections can be included only when supported by the catalog. QA notebooks also
+include per-column missing-value statistics, objective data warnings, and
+optional generic categorical count plots.
+
+QA inputs larger than 100 MB use lazy Dask or LSDB partition aggregations by
+default. Only the columns and aggregate bins required by each plot are computed
+in memory. The threshold is configurable, and `force_compute: true` explicitly
+restores full in-memory loading when required. Lazy QA can use the same local or
+SLURM `dask_cluster` configuration as the other distributed pipeline stages.
 
 Supported local examples live under:
 
 - `configs/inspect/`
 - `configs/prepare/`
 - `configs/curate/`
+- `configs/qa/`
 - `tests/data/raw/`
 
 ## Documentation
@@ -69,8 +88,14 @@ Detailed documentation lives in `docs/`:
 - `docs/prepare-schema.rst`
 - `docs/curate-schema.rst`
 - `docs/curate-transformations.rst`
+- `docs/qa-schema.rst`
 - `docs/large-data.rst`
 - `docs/sample-data.md`
+
+Acknowledgements for public data, images, footprint curves, and other external
+materials used or referenced by test fixtures and examples are maintained in
+`tests/data/acknowledgements.md`. Keep this file updated when adding or changing
+data assets.
 
 ## Development
 
@@ -79,5 +104,6 @@ pytest -q
 pre-commit run --all-files
 ```
 
-Large source catalogs and generated artifacts should not be committed. Small,
-redistributable fixtures used by tests live under `tests/data/raw/`.
+Large source catalogs and exploratory generated artifacts should not be
+committed. Small, redistributable raw, prepared, and curated fixtures used by
+tests live under `tests/data/`.

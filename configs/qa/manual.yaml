@@ -1,0 +1,119 @@
+# Full QA configuration reference. Remove optional sections that do not apply.
+
+title: Example Catalog
+subtitle: Basic dataset characterization
+
+# Local curated Parquet, CSV, or HATS input.
+input_file: tests/data/curated/example.parquet
+input_format: parquet
+
+# Output notebook path. Use output_dir instead to write qa_notebook.ipynb there.
+output_notebook: reports/qa/example.ipynb
+# output_dir: reports/qa
+
+# Use absolute paths when true and notebook-relative paths when false.
+include_absolute_input_path: true
+
+# Inputs larger than this on-disk size use lazy partition aggregations.
+large_input_threshold_mb: 100
+
+# Load the complete input even when it exceeds the lazy threshold.
+force_compute: false
+
+# Dask executor used only by lazy QA mode. Local defaults to one 6 GB worker.
+dask_cluster:
+  name: local
+  args:
+    n_workers: 1
+    threads_per_worker: 1
+    memory_limit: 6GB
+    dashboard_address: null
+    # Threads avoid worker subprocesses in small local notebook runs.
+    processes: false
+  # Optional Dask log directory; SLURM defaults to the notebook output logs/.
+  logs_dir: null
+
+# SLURM example; replace dask_cluster above when running lazy QA on HPC.
+# dask_cluster:
+#   name: slurm
+#   logs_dir: reports/qa/logs
+#   args:
+#     instance:
+#       cores: 4
+#       processes: 1
+#       memory: 24GB
+#       queue: your-queue
+#       account: your-account
+#       job_extra_directives: []
+#     scale:
+#       minimum_jobs: 1
+#       maximum_jobs: 4
+
+# Optionally execute an in-memory notebook copy and export HTML.
+generate_html: false
+output_html: reports/qa/example.html
+html_execution_timeout: 600
+html_kernel_name: python3
+
+# Omit to use the notebook generation date.
+# last_verified_run: 2026-06-30
+
+# Up to two image paths or URLs. width, align, and style are optional.
+header_images:
+  - url: https://example.org/logo.svg
+    width: 100
+    align: left
+    style: "padding: 10px"
+
+# Optional complete Jupyter notebook metadata override.
+# metadata:
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+
+# Markdown strings displayed near the start of the notebook.
+summary:
+  - "**Original file:** `catalog.fits`"
+
+acknowledgments:
+  - This notebook uses the Example Catalog.
+
+# Every plot section is optional.
+plots:
+  spatial:
+    ra_column: ra
+    dec_column: dec
+    title: Example Catalog - Spatial distribution
+    footprints:
+      - path: tests/data/curves/example.csv
+        # Optional explicit schema: region_vertices or declination_limit.
+        format: region_vertices
+        label: Example footprint
+        color: red
+        linewidth: 1
+  redshift:
+    column: redshift
+    title: Redshift distribution
+    range: [0, 5]
+    bins: 50
+  redshift_error:
+    column: redshift_err
+    title: Redshift error distribution
+    range: [0, 0.1]
+    bins: 50
+  quality:
+    column: quality
+    title: Quality flag distribution
+    # Optional x-axis category label rotation in degrees.
+    label_rotation: 0
+    description: |
+      | Flag | Description |
+      |---|---|
+      | 1 | Example quality flag |
+  # Generic count plots for any categorical columns. Each item is optional.
+  categorical:
+    - column: TYPE
+      title: Object type distribution
+      label_rotation: 45
+      description: Optional Markdown displayed before this plot.

@@ -1,10 +1,6 @@
 input_file: tests/data/raw/2dflens_sample.dat.gz
-output_dir: reports/prepared/2dflens.parquet
-chunk_size_rows: 200000
-large_file_threshold_mb: 100
-target_partition_size_mb: 100
-output_mode: auto
-allow_large_single_output: false
+output_dir: tests/data/prepared/2dflens.parquet
+output_mode: single
 overwrite: true
 part_prefix: 2dflens
 
@@ -20,11 +16,3 @@ column_names:
   - imag
   - zmag
   - w1mag
-
-dask_cluster:
-  name: local
-  args:
-    n_workers: 3
-    threads_per_worker: 1
-    memory_limit: 2GB
-    dashboard_address:

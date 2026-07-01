@@ -1,8 +1,10 @@
-input_file: tests/data/raw/2dfgrs_sample.idz.gz
-output_dir: reports/curated/2dfgrs.parquet
+input_file: tests/data/prepared/2dfgrs.parquet
+output_dir: tests/data/curated/2dfgrs.parquet
+output_mode: single
 overwrite: true
+part_prefix: 2dfgrs
 
-column_names:
+column_selection:
   - serial
   - spectra
   - name
@@ -38,16 +40,11 @@ column_names:
   - NMBEST
   - SNR
   - ETA_TYPE
-
-column_selection:
-  - serial
-  - name
+  - ra_b1950_deg
+  - dec_b1950_deg
   - ra_j2000_deg
   - dec_j2000_deg
-  - z
-  - z_helio
-  - quality
-  - ETA_TYPE
+  - survey_name
 
 coordinates:
   ra_column: ra_j2000_deg
@@ -55,9 +52,19 @@ coordinates:
 
 redshift:
   column: z
-  invalid_policy: flag
+  invalid_policy: keep
 
 transformations:
+  - type: ra_hms_to_degrees
+    output_column: ra_b1950_deg
+    hours: ra_b1950_h
+    minutes: ra_b1950_m
+    seconds: ra_b1950_s
+  - type: dec_dms_to_degrees
+    output_column: dec_b1950_deg
+    degrees: dec_b1950_d
+    arcminutes: dec_b1950_m
+    arcseconds: dec_b1950_s
   - type: ra_hms_to_degrees
     output_column: ra_j2000_deg
     hours: ra_j2000_h

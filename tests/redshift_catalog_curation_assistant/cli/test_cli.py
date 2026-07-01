@@ -46,6 +46,56 @@ def test_prepare_help():
     assert "--dry-run" in result.output
 
 
+def test_qa_help():
+    """Ensure the QA command exposes notebook generation options."""
+    result = CliRunner().invoke(cli, ["qa", "--help"])
+
+    assert result.exit_code == 0
+    assert "--dry-run" in result.output
+
+
+def test_qa_command_generates_notebook(tmp_path):
+    """Ensure qa can generate a notebook from a local curate output config."""
+    config = tmp_path / "qa.yaml"
+    output_notebook = tmp_path / "qa.ipynb"
+    config.write_text(
+        "\n".join(
+            [
+                "title: SAMPLE",
+                "input_file: curated/sample",
+                f"output_notebook: {output_notebook}",
+            ]
+        )
+    )
+
+    result = CliRunner().invoke(cli, ["qa", str(config)])
+
+    assert result.exit_code == 0
+    assert f"QA notebook written to {output_notebook}" in result.output
+    assert output_notebook.exists()
+
+
+def test_qa_dry_run_does_not_write_notebook(tmp_path):
+    """Ensure qa dry-run validates config without writing the notebook."""
+    config = tmp_path / "qa.yaml"
+    output_notebook = tmp_path / "qa.ipynb"
+    config.write_text(
+        "\n".join(
+            [
+                "title: SAMPLE",
+                "input_file: curated/sample",
+                f"output_notebook: {output_notebook}",
+            ]
+        )
+    )
+
+    result = CliRunner().invoke(cli, ["qa", str(config), "--dry-run"])
+
+    assert result.exit_code == 0
+    assert f"QA dry-run OK; notebook would be written to {output_notebook}" in result.output
+    assert not output_notebook.exists()
+
+
 def test_inspect_fits_reports_large_compressed_file_error(tmp_path, monkeypatch):
     """Ensure inspect-fits reports large compressed FITS files without traceback."""
     import redshift_catalog_curation_assistant.fits.fits as fits_module
@@ -626,7 +676,7 @@ def test_curate_command_can_suppress_info_logs(tmp_path):
     assert "Curated catalog written to" in result.output
 
 
-@pytest.mark.parametrize("command", ["qa", "validate-flags", "run"])
+@pytest.mark.parametrize("command", ["validate-flags", "run"])
 def test_planned_commands(command, tmp_path):
     """Ensure later-phase commands are present and return a stable placeholder."""
     cfg = tmp_path / "config.yaml"

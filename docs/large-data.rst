@@ -5,7 +5,7 @@ The recommended large-data workflow is:
 
 .. code-block:: text
 
-   raw catalog -> prepare -> partitioned Parquet -> inspect/curate
+   raw catalog -> prepare -> partitioned Parquet/HATS -> inspect/curate -> qa
 
 Default Dask Executor
 ---------------------
@@ -115,6 +115,38 @@ For HATS input, ``curate`` always creates a Dask client, opens the catalog with
 ``Catalog`` operations, and writes HATS with ``Catalog.write_catalog()``.
 HATS input currently requires HATS output.
 
+QA
+--
+
+``qa`` starts a Dask cluster only when the generated notebook selects lazy mode,
+which happens when the local input size exceeds ``large_input_threshold_mb``.
+In-memory inputs and ``force_compute: true`` do not start a cluster.
+
+Lazy Parquet and CSV plots use Dask dataframes. Lazy HATS plots remain on the
+public LSDB ``Catalog`` API. In both cases, plot cells project only their needed
+columns and compute partitioned histogram or value-count aggregates rather than
+materializing the complete catalog.
+
+The QA config accepts the same ``dask_cluster`` schema as the other distributed
+pipeline stages. For example, a local threaded notebook run can use:
+
+.. code-block:: yaml
+
+   dask_cluster:
+     name: local
+     args:
+       n_workers: 2
+       threads_per_worker: 1
+       memory_limit: 4GB
+       processes: false
+       dashboard_address:
+
+The generated notebook creates the cluster and ``distributed.Client`` before
+opening lazy data. Its final cleanup cell closes both, with an ``atexit``
+fallback if notebook execution stops early. For SLURM, worker logs default to a
+``logs`` directory beside the notebook output unless
+``dask_cluster.logs_dir`` is configured.
+
 SLURM Example
 -------------
 
@@ -127,8 +159,8 @@ SLURM Example
          cores: 4
          processes: 1
          memory: 16GB
-         queue: cpu
-         account: my-account
+         queue: your-queue
+         account: your-account
        scale:
          minimum_jobs: 1
          maximum_jobs: 4

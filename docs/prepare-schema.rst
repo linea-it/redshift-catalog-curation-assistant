@@ -20,7 +20,8 @@ Required Fields
 
 ``input_file`` or ``input_files``
   Source catalog path, or a list of files that represent one logical catalog.
-  Multiple inputs must have the same format and schema.
+  Multiple inputs must have the same format. Their schemas must match unless
+  ``schema_policy: union`` is selected.
 
   If the input is already HATS, ``prepare`` stops with a message explaining that
   HATS is supported directly by downstream commands and does not need
@@ -39,9 +40,19 @@ Input Options
 ``column_names``
   Required for headerless whitespace inputs such as ``.dat`` and ``.idz``.
 
+``schema_policy``
+  Controls multi-file schema handling. ``strict`` is the default and rejects
+  mismatches. ``union`` keeps columns in first-seen order and fills columns
+  missing from an input with null values. Adding nulls can promote integer
+  columns to nullable or floating-point representations in the Parquet output.
+
 ``large_file_threshold_mb``
   Defaults to ``100``. Small single-file inputs below the threshold are read in
   memory and written as one Parquet part. Large inputs use Dask/chunked paths.
+
+``dask_threshold_mb``
+  Legacy alias for ``large_file_threshold_mb``. Prefer
+  ``large_file_threshold_mb`` in new configurations.
 
 ``chunk_size_rows``
   Row chunk size for FITS input. Defaults to ``200000``. The effective chunk
@@ -73,6 +84,9 @@ Output Options
 
 ``part_prefix``
   Prefix for generated Parquet part filenames. Defaults to the input stem.
+
+``progress_bar``
+  ``false`` by default. Enables progress bars in supported HATS writers.
 
 ``dask_cluster``
   Optional Dask executor config. If omitted and a Dask path is used, the default
@@ -115,6 +129,9 @@ The ``hats`` block must identify the coordinate columns:
 
 ``hats.sort_columns``
   Optional column name passed to ``hats_import`` for large-input sorting.
+
+``hats.create_thumbnail``
+  ``false`` by default. Requests thumbnail creation from LSDB/HATS writers.
 
 Small inputs below ``large_file_threshold_mb`` are read into pandas, converted
 with ``lsdb.from_dataframe()``, and written with ``Catalog.write_catalog()``.
@@ -199,5 +216,21 @@ Prepare several files as one logical catalog:
      - path/to/catalog_part0.csv
      - path/to/catalog_part1.csv
    output_dir: outputs/prepared/catalog.parquet
+   schema_policy: union
    overwrite: true
    output_mode: auto
+
+The versioned 2MRS example demonstrates two FITS inputs whose schemas differ by
+three optional columns:
+
+.. code-block:: console
+
+   redshift-curator prepare configs/prepare/2mrs.example.yaml
+   redshift-curator inspect configs/inspect/2mrs.example.yaml
+   redshift-curator curate configs/curate/2mrs.example.yaml
+   redshift-curator qa configs/qa/2mrs.example.yaml
+
+It uses ``schema_policy: union`` so ``DELRA``, ``DELDC``, and ``MCHTOL`` are
+present in the combined dataset and null for rows from the input that does not
+define them. The curated output retains the unioned source columns and adds
+``redshift``, ``redshift_err``, and ``survey_name``.

@@ -1,8 +1,10 @@
-input_file: tests/data/raw/2dflens_sample.dat.gz
-output_dir: reports/curated/2dflens.parquet
+input_file: tests/data/prepared/2dflens.parquet
+output_dir: tests/data/curated/2dflens.parquet
+output_mode: single
 overwrite: true
+part_prefix: 2dflens
 
-column_names:
+column_selection:
   - RA
   - Dec
   - z
@@ -14,13 +16,7 @@ column_names:
   - imag
   - zmag
   - w1mag
-
-column_selection:
-  - target
-  - RA
-  - Dec
-  - z
-  - qual
+  - survey_name
 
 coordinates:
   ra_column: RA
@@ -28,12 +24,9 @@ coordinates:
 
 redshift:
   column: z
-  invalid_policy: flag
+  invalid_policy: keep
 
 transformations:
   - type: add_constant_column
     name: survey_name
     value: 2DFLENS
-  - type: cast
-    column: qual
-    dtype: float64
