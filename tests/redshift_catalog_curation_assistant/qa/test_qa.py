@@ -15,8 +15,8 @@ from redshift_catalog_curation_assistant.qa import dry_run_qa_config, generate_q
     ("layout", "expected"),
     [
         (
-            {"desi_dr1_lite_head/collection.properties": ""},
-            ("hats", "desi_dr1_lite_head"),
+            {"hats_catalog/collection.properties": ""},
+            ("hats", "hats_catalog"),
         ),
         (
             {"catalog/c3r2_dr3.parquet": ""},
@@ -220,7 +220,7 @@ def test_generate_qa_notebook_autodetects_unzipped_pzserver_input(tmp_path):
         {
             "output_notebook": str(output_notebook),
             "include_absolute_input_path": False,
-            "pzs_prod_name": "314_desi_dr1_lite",
+            "pzs_prod_name": "314_example_hats_product",
             "pzs_token_path": str(tmp_path / "token.txt"),
             "pzs_host": "pz",
             "pzs_download_dir": str(tmp_path / "downloaded_data"),
@@ -312,11 +312,11 @@ def test_generate_qa_notebook_defers_manual_pzserver_input_mode_until_download(t
         {
             "output_notebook": str(output_notebook),
             "include_absolute_input_path": False,
-            "pzs_prod_name": "314_desi_dr1_lite",
+            "pzs_prod_name": "314_example_hats_product",
             "pzs_token_path": str(tmp_path / "token.txt"),
             "pzs_host": "pz",
             "pzs_download_dir": str(tmp_path / "downloaded_data"),
-            "input_file": str(tmp_path / "downloaded_data" / "314_desi_dr1_lite" / "desi_dr1_lite_head"),
+            "input_file": str(tmp_path / "downloaded_data" / "314_example_hats_product" / "hats_catalog"),
             "input_format": "hats",
         }
     )
@@ -325,7 +325,7 @@ def test_generate_qa_notebook_defers_manual_pzserver_input_mode_until_download(t
     combined = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
 
     assert "**Data access mode:** resolved at runtime after PZ Server download" in combined
-    assert "qa_input_file = 'downloaded_data/314_desi_dr1_lite/desi_dr1_lite_head'" in combined
+    assert "qa_input_file = 'downloaded_data/314_example_hats_product/hats_catalog'" in combined
     assert "qa_input_format = 'hats'" in combined
     assert "qa_input_size_bytes = qa_path_size_bytes(qa_input_file)" in combined
     assert "qa_runtime_summary = pd.Series({" in combined
