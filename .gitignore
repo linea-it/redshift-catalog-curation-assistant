@@ -152,6 +152,7 @@ _html/
 # Scratch and temporary data folders
 scratch-folder-NOT-TRACKED/
 configs_not_tracked/
+production_configs/
 data_not_tracked/
 /reports/
 
