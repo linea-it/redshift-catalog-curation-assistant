@@ -1,12 +1,77 @@
 import json
+import subprocess
 import warnings
 from datetime import date
 
+import lsdb
 import numpy as np
 import pandas as pd
 import pytest
 
 from redshift_catalog_curation_assistant.qa import dry_run_qa_config, generate_qa_notebook, run_qa_config
+
+
+@pytest.mark.parametrize(
+    ("layout", "expected"),
+    [
+        (
+            {"hats_catalog/collection.properties": ""},
+            ("hats", "hats_catalog"),
+        ),
+        (
+            {"catalog/c3r2_dr3.parquet": ""},
+            ("parquet", "catalog/c3r2_dr3.parquet"),
+        ),
+        (
+            {
+                "catalog/part.0.parquet": "",
+                "catalog/part.1.parquet": "",
+            },
+            ("parquet", "catalog"),
+        ),
+        (
+            {"catalog.csv": ""},
+            ("csv", "catalog.csv"),
+        ),
+    ],
+)
+def test_pzserver_detection_source_recognizes_supported_unzipped_layouts(tmp_path, layout, expected):
+    """Ensure archive autodetection resolves a single supported extracted input."""
+    from redshift_catalog_curation_assistant.qa.qa import _pzserver_detection_source
+
+    for relative_path, contents in layout.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+
+    namespace = {
+        "Path": type(tmp_path),
+        "archive_members": [path for path in tmp_path.rglob("*") if path.is_file()],
+        "archive_path": tmp_path / "product.zip",
+    }
+
+    exec(_pzserver_detection_source(), namespace)
+
+    detected = namespace["qa_input_file"].relative_to(tmp_path).as_posix()
+    assert (namespace["qa_input_format"], detected) == expected
+
+
+def test_pzserver_detection_source_rejects_ambiguous_unzipped_layouts(tmp_path):
+    """Ensure archive autodetection fails when multiple supported inputs remain."""
+    from redshift_catalog_curation_assistant.qa.qa import _pzserver_detection_source
+
+    for relative_path in ("first.csv", "second.csv"):
+        path = tmp_path / relative_path
+        path.write_text("", encoding="utf-8")
+
+    namespace = {
+        "Path": type(tmp_path),
+        "archive_members": [path for path in tmp_path.rglob("*") if path.is_file()],
+        "archive_path": tmp_path / "product.zip",
+    }
+
+    with pytest.raises(ValueError, match="Expected exactly one HATS, Parquet, or CSV input"):
+        exec(_pzserver_detection_source(), namespace)
 
 
 def test_generate_qa_notebook_reads_local_parquet_and_uses_configured_header_images(tmp_path):
@@ -110,8 +175,185 @@ def test_generate_qa_notebook_supports_hats_input(tmp_path):
 
     assert any("import lsdb" in source for source in sources)
     assert any("catalog = lsdb.open_catalog('" in source for source in sources)
+    assert any("catalog.aggregate_column_statistics()" in source for source in sources)
     assert any("curated/hats_catalog" in source for source in sources)
     assert any("max-height: 520px; overflow: auto" in source for source in sources)
+
+
+def test_generate_qa_notebook_downloads_optional_pzserver_product(tmp_path):
+    """Ensure PZ Server products are downloaded before normal catalog loading."""
+    output_notebook = tmp_path / "qa.ipynb"
+    generate_qa_notebook(
+        {
+            "input_file": str(tmp_path / "downloaded_data" / "303_c3r2_dr3" / "catalog.parquet"),
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "pzs_prod_name": "303_c3r2_dr3",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "pzs_download_dir": str(tmp_path / "downloaded_data"),
+            "pzs_overwrite": True,
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = ["".join(cell["source"]) for cell in notebook["cells"]]
+    combined = "\n".join(sources)
+    assert "from pzserver import PzServer" in combined
+    assert "pz_server = PzServer(token=token, host='pz')" in combined
+    assert "prod_name = '303_c3r2_dr3'" in combined
+    assert "download_path = download_root / prod_name" in combined
+    assert "pzs_overwrite = True" in combined
+    assert "shutil.rmtree(download_path)" in combined
+    assert "pz_server.download_product(product_id=prod_name, save_in=download_path)" in combined
+    assert "archive.extractall(download_path)" in combined
+    assert "qa_input_file = 'downloaded_data/303_c3r2_dr3/catalog.parquet'" in combined
+    assert "qa_input_format = 'parquet'" in combined
+    assert "qa_data = qa_open_data()" in combined
+
+
+def test_generate_qa_notebook_autodetects_unzipped_pzserver_input(tmp_path):
+    """Ensure PZ Server inputs can be detected from the extracted archive contents."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "pzs_prod_name": "314_example_hats_product",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "pzs_download_dir": str(tmp_path / "downloaded_data"),
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    combined = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    assert "collection.properties" in combined
+    assert "hats.properties" in combined
+    assert "qa_input_format, qa_input_file = candidates[0]" in combined
+    assert "**Data access mode:** resolved at runtime after PZ Server download" in combined
+    assert "**Input size:** determined from the detected local input after unzip" not in combined
+    assert "**Lazy threshold:** 100 MB" not in combined
+    assert "**Lazy executor when needed:**" not in combined
+    assert "def qa_open_data(columns=None):" in combined
+    assert "return dd.read_parquet(qa_input_file, columns=columns)" in combined
+    assert "return dd.read_csv(qa_input_file, usecols=columns)" in combined
+    assert "return lsdb.open_catalog(qa_input_file, columns=columns)" in combined
+    assert "qa_input_size_bytes = qa_path_size_bytes(qa_input_file)" in combined
+    assert "qa_access_mode = 'lazy'" in combined
+    assert "qa_access_mode = 'in_memory'" in combined
+    assert "qa_runtime_summary = pd.Series({" in combined
+    assert "'input_size_mb': qa_input_size_bytes / (1024 * 1024)" in combined
+    assert "qa_runtime_summary['dask_executor'] = 'not used'" in combined
+    assert "qa_data = qa_open_data()" in combined
+
+
+def test_qa_config_requires_complete_pzserver_configuration():
+    """Ensure partially configured PZ Server access fails validation."""
+    with pytest.raises(ValueError, match="pzs_token_path"):
+        dry_run_qa_config({"input_file": "catalog.parquet", "pzs_prod_name": "123_product"})
+
+
+def test_qa_config_rejects_non_boolean_pzserver_overwrite():
+    """Ensure product replacement requires an explicit boolean setting."""
+    with pytest.raises(ValueError, match="pzs_overwrite"):
+        dry_run_qa_config(
+            {
+                "input_file": "catalog.parquet",
+                "pzs_prod_name": "123_product",
+                "pzs_token_path": "token.txt",
+                "pzs_host": "pz",
+                "pzs_overwrite": "yes",
+            }
+        )
+
+
+def test_qa_config_rejects_pzserver_input_format_override_without_input_file():
+    """Ensure PZ override format is only accepted alongside an explicit input path."""
+    with pytest.raises(ValueError, match="input_format override requires an input_file override"):
+        dry_run_qa_config(
+            {
+                "pzs_prod_name": "123_product",
+                "pzs_token_path": "token.txt",
+                "pzs_host": "pz",
+                "input_format": "parquet",
+            }
+        )
+
+
+def test_generate_qa_notebook_supports_force_compute_with_pzserver_autodetection(tmp_path):
+    """Ensure runtime autodetection can still force a full in-memory read after download."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "pzs_prod_name": "123_product",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "force_compute": True,
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    combined = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    assert "qa_force_compute = True" in combined
+    assert "qa_access_mode = 'forced_in_memory'" in combined
+
+
+def test_generate_qa_notebook_defers_manual_pzserver_input_mode_until_download(tmp_path):
+    """Ensure hybrid PZ Server configs resolve access mode at runtime when the local path appears later."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "pzs_prod_name": "314_example_hats_product",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "pzs_download_dir": str(tmp_path / "downloaded_data"),
+            "input_file": str(tmp_path / "downloaded_data" / "314_example_hats_product" / "hats_catalog"),
+            "input_format": "hats",
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    combined = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    assert "**Data access mode:** resolved at runtime after PZ Server download" in combined
+    assert "qa_input_file = 'downloaded_data/314_example_hats_product/hats_catalog'" in combined
+    assert "qa_input_format = 'hats'" in combined
+    assert "qa_input_size_bytes = qa_path_size_bytes(qa_input_file)" in combined
+    assert "qa_runtime_summary = pd.Series({" in combined
+
+
+def test_generate_qa_notebook_compiles_for_pzserver_autodetection_with_plots(tmp_path):
+    """Ensure the automatic PZ Server path emits syntactically valid code across QA sections."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "pzs_prod_name": "123_product",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "plots": {
+                "spatial": {"ra_column": "ra", "dec_column": "dec"},
+                "redshift": {"column": "z", "range": [0, 4]},
+                "quality": {"column": "quality"},
+            },
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    code_sources = ["".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"]
+
+    for index, source in enumerate(code_sources):
+        compile(source, f"qa-auto-cell-{index}", "exec")
 
 
 def test_generate_qa_notebook_can_use_relative_input_path(tmp_path):
@@ -243,14 +485,19 @@ def test_run_qa_config_can_execute_notebook_and_export_html(tmp_path, monkeypatc
     import nbclient
     import nbconvert
 
+    execute_calls = []
+
     class FakeNotebookClient:
-        def __init__(self, notebook, timeout, kernel_name, resources):
+        def __init__(self, notebook, timeout, kernel_name, resources, km=None, shutdown_kernel=None):
             self.notebook = notebook
             self.timeout = timeout
             self.kernel_name = kernel_name
             self.resources = resources
+            self.km = km
+            self.shutdown_kernel = shutdown_kernel
 
-        def execute(self):
+        def execute(self, **kwargs):
+            execute_calls.append(kwargs)
             self.notebook["cells"][0]["source"] = ["# Executed QA\n"]
 
     class FakeHTMLExporter:
@@ -282,6 +529,15 @@ def test_run_qa_config_can_execute_notebook_and_export_html(tmp_path, monkeypatc
     }
     assert artifacts["html"].exists()
     assert "Executed QA" in artifacts["html"].read_text(encoding="utf-8")
+    assert len(execute_calls) == 1
+    assert execute_calls[0]["independent"] is True
+    assert execute_calls[0]["env"]["JPY_PARENT_PID"] == "1"
+    assert execute_calls[0]["env"]["IPYTHONDIR"]
+    assert "JPY_INTERRUPT_EVENT" not in execute_calls[0]["env"]
+    assert "IPY_INTERRUPT_EVENT" not in execute_calls[0]["env"]
+    assert execute_calls[0]["stdin"] is subprocess.DEVNULL
+    assert execute_calls[0]["stdout"] is subprocess.DEVNULL
+    assert execute_calls[0]["stderr"] is subprocess.DEVNULL
 
     notebook = json.loads(output_notebook.read_text())
     code_cells = [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]
@@ -545,6 +801,131 @@ def test_generate_qa_notebook_uses_public_lazy_hats_operations(tmp_path):
     assert "columns=['zbest']" in sources
     assert "._ddf" not in sources
     assert "lsdb.open_catalog('/" not in sources
+
+
+@pytest.mark.parametrize(
+    ("kind", "lazy", "expected_snippets", "forbidden_snippets"),
+    [
+        (
+            "parquet",
+            False,
+            ["df.describe()"],
+            ["catalog.aggregate_column_statistics()", "df.describe().compute()"],
+        ),
+        (
+            "csv",
+            False,
+            ["df.describe()"],
+            ["catalog.aggregate_column_statistics()", "df.describe().compute()"],
+        ),
+        (
+            "hats",
+            False,
+            ["catalog.aggregate_column_statistics()"],
+            ["df.describe()", "df.describe().compute()"],
+        ),
+        (
+            "parquet",
+            True,
+            ["df.describe().compute()"],
+            ["catalog.aggregate_column_statistics()", "df.describe()\n"],
+        ),
+        (
+            "csv",
+            True,
+            ["df.describe().compute()"],
+            ["catalog.aggregate_column_statistics()", "df.describe()\n"],
+        ),
+        (
+            "hats",
+            True,
+            ["catalog.aggregate_column_statistics()", "count_data = lsdb.open_catalog("],
+            ["df.describe()", "df.describe().compute()"],
+        ),
+    ],
+)
+def test_generate_qa_notebook_uses_expected_basic_statistics_source_by_mode_and_format(
+    tmp_path, kind, lazy, expected_snippets, forbidden_snippets
+):
+    """Ensure each mode/format combination emits the intended basic statistics operation."""
+    output_notebook = tmp_path / "qa.ipynb"
+    if kind == "parquet":
+        input_file = tmp_path / "catalog.parquet"
+        pd.DataFrame({"ra": [1.0], "dec": [2.0]}).to_parquet(input_file)
+        config = {"input_file": str(input_file)}
+    elif kind == "csv":
+        input_file = tmp_path / "catalog.csv"
+        input_file.write_text("ra,dec\n1.0,2.0\n", encoding="utf-8")
+        config = {"input_file": str(input_file), "input_format": "csv"}
+    else:
+        input_file = "tests/data/raw/elaisfbmc_sample" if lazy else tmp_path / "tiny_hats"
+        if not lazy:
+            input_path = tmp_path / "tiny_hats"
+            input_path.mkdir()
+            (input_path / "collection.properties").write_text("", encoding="utf-8")
+            input_file = input_path
+        config = {"input_file": str(input_file), "input_format": "hats"}
+    if lazy:
+        config["large_input_threshold_mb"] = 0.000001
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            **config,
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    for snippet in expected_snippets:
+        assert snippet in sources
+    for snippet in forbidden_snippets:
+        assert snippet not in sources
+
+
+@pytest.mark.parametrize("columns", [None, ["zbest"]])
+def test_hats_sample_exposes_public_statistics_api_for_full_and_projected_catalogs(columns):
+    """Ensure the public HATS statistics API works for the notebook open patterns."""
+    kwargs = {"columns": columns} if columns is not None else {}
+    catalog = lsdb.open_catalog("tests/data/raw/elaisfbmc_sample", **kwargs)
+
+    assert hasattr(catalog, "aggregate_column_statistics")
+
+    statistics = catalog.aggregate_column_statistics()
+    assert hasattr(statistics, "to_html")
+    assert not statistics.empty
+
+    assert "zbest" in statistics.index
+
+
+def test_generate_qa_notebook_uses_minimal_hats_column_projection_for_lazy_plots(tmp_path):
+    """Ensure lazy HATS plot cells project only the columns they actually need."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "input_file": "tests/data/raw/elaisfbmc_sample",
+            "input_format": "hats",
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "large_input_threshold_mb": 0.000001,
+            "plots": {
+                "spatial": {"ra_column": "RAdeg", "dec_column": "DEdeg"},
+                "redshift": {"column": "zbest", "range": [0, 5]},
+                "redshift_error": {"column": "n_valid_bands", "range": [0, 8]},
+                "quality": {"column": "zbest_type"},
+            },
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    sources = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    assert "columns=['RAdeg', 'DEdeg']" in sources
+    assert "columns=['zbest']" in sources
+    assert "columns=['n_valid_bands']" in sources
+    assert "columns=['zbest_type']" in sources
 
 
 @pytest.mark.parametrize(

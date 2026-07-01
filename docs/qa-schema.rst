@@ -40,6 +40,30 @@ Input And Output
   ``parquet`` by default. Valid values are ``parquet``, ``csv``, and ``hats``.
   HATS inputs are opened with ``lsdb.open_catalog()``.
 
+``pzs_prod_name``, ``pzs_token_path``, and ``pzs_host``
+  Optional PZ Server input configuration. When any of these fields is present,
+  all three are required. The generated notebook reads the token from
+  ``pzs_token_path``, downloads ``pzs_prod_name`` from ``pzs_host``, and
+  extracts the returned ZIP archive before opening ``input_file`` through the
+  normal Parquet, CSV, or HATS path. ``pzs_download_dir`` selects the download
+  root and defaults to ``./downloaded_data``. Each product is isolated under
+  ``pzs_download_dir/pzs_prod_name``. ``pzs_overwrite`` defaults to ``false``;
+  when true, the generated notebook removes only that product directory before
+  downloading it again. Omit both ``input_file`` and ``input_format`` to detect
+  the input from the current ZIP. HATS collections and object catalogs are
+  recognized through ``collection.properties`` and ``hats.properties``;
+  Parquet and CSV inputs are recognized by extension. Set both fields to
+  override detection. Automatic inputs resolve the final local input path,
+  input format, and on-disk size at notebook runtime, then apply the same
+  ``force_compute`` and ``large_input_threshold_mb`` rules as ordinary local
+  inputs.
+
+  For PZ Server setup and usage details, see:
+
+  - documentation: https://docs.linea.org.br/en/sci-platforms/pz_server.html
+  - website: https://pzserver.linea.org.br/
+  - Python package: https://pypi.org/project/pzserver/
+
 ``output_notebook`` or ``output_dir``
   Optional notebook destination. Configure at most one. ``output_notebook``
   names the file directly; ``output_dir`` writes ``qa_notebook.ipynb`` inside
@@ -60,7 +84,9 @@ Input And Output
 ``force_compute``
   ``false`` by default. When true, bypasses the size threshold and loads the
   complete input into memory. The generated notebook identifies the mode as
-  ``forced in-memory`` and emits a runtime warning before loading data.
+  ``forced in-memory`` and emits a runtime warning before loading data. This
+  also applies to automatic PZ Server inputs after the notebook detects the
+  extracted local product.
 
 ``dask_cluster``
   Optional executor configuration using the same ``local`` or ``slurm`` schema
@@ -152,9 +178,11 @@ Large Input Behavior
 --------------------
 
 The generated notebook records the selected data-access mode, measured input
-size, and configured threshold. Large Parquet and CSV inputs are opened with
-Dask; large HATS inputs remain on the public LSDB ``Catalog`` API. The pipeline
-does not use private LSDB dataframe attributes.
+size, and configured threshold. For automatic PZ Server inputs, those values
+are resolved after download and unzip using the detected local product path.
+Large Parquet and CSV inputs are opened with Dask; large HATS inputs remain on
+the public LSDB ``Catalog`` API. The pipeline does not use private LSDB
+dataframe attributes.
 
 Before opening lazy data, the notebook creates the configured cluster and a
 ``distributed.Client`` through the shared executor implementation. A final

@@ -7,6 +7,17 @@ subtitle: Basic dataset characterization
 input_file: reports/curated/example.parquet
 input_format: parquet
 
+# Optional PZ Server source. Omit input_file and input_format to autodetect the
+# extracted HATS, Parquet, or CSV product after download and unzip.
+# Set both to override autodetection with an explicit local path.
+# When one pzs_* connection field is set, all three are required.
+# pzs_prod_name: 314_example_product
+# pzs_token_path: ./token.txt
+# pzs_host: pz
+# pzs_download_dir: ./downloaded_data
+# Remove an existing pzs_download_dir/pzs_prod_name directory before download.
+# pzs_overwrite: false
+
 # Output notebook path. Use output_dir instead to write qa_notebook.ipynb there.
 output_notebook: reports/qa/example.ipynb
 # output_dir: reports/qa
@@ -18,6 +29,8 @@ include_absolute_input_path: true
 large_input_threshold_mb: 100
 
 # Load the complete input even when it exceeds the lazy threshold.
+# For automatic PZ Server inputs, this is applied after autodetection resolves
+# the extracted local input path and format.
 force_compute: false
 
 # Dask executor used only by lazy QA mode. Local defaults to one 6 GB worker.

@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,7 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
 
     try:
         import nbformat
+        from jupyter_client import AsyncKernelManager
         from nbclient import NotebookClient
         from nbconvert import HTMLExporter
     except ImportError as exc:  # pragma: no cover - dependency metadata should prevent this
@@ -80,14 +83,50 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
             "Install the project with QA HTML dependencies enabled."
         ) from exc
 
-    notebook = nbformat.read(output_notebook, as_version=4)
-    client = NotebookClient(
-        notebook,
-        timeout=validated.get("html_execution_timeout", 600),
-        kernel_name=validated.get("html_kernel_name", "python3"),
-        resources={"metadata": {"path": str(output_notebook.parent.resolve())}},
-    )
-    client.execute()
+    with tempfile.TemporaryDirectory(prefix="qa-ipython-") as ipython_dir:
+        execution_env = os.environ.copy()
+        execution_env["IPYTHONDIR"] = ipython_dir
+        execution_env["JPY_PARENT_PID"] = "1"
+        execution_env.pop("JPY_INTERRUPT_EVENT", None)
+        execution_env.pop("IPY_INTERRUPT_EVENT", None)
+        resources = {"metadata": {"path": str(output_notebook.parent.resolve())}}
+        kernel_name = validated.get("html_kernel_name", "python3")
+        timeout = validated.get("html_execution_timeout", 600)
+
+        notebook = nbformat.read(output_notebook, as_version=4)
+        client = NotebookClient(
+            notebook,
+            timeout=timeout,
+            kernel_name=kernel_name,
+            resources=resources,
+            shutdown_kernel="immediate",
+        )
+        client.km = AsyncKernelManager(kernel_name=kernel_name)
+        client.km.transport = "ipc"
+        try:
+            client.execute(
+                env=execution_env,
+                independent=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            notebook = nbformat.read(output_notebook, as_version=4)
+            client = NotebookClient(
+                notebook,
+                timeout=timeout,
+                kernel_name=kernel_name,
+                resources=resources,
+                shutdown_kernel="immediate",
+            )
+            client.execute(
+                env=execution_env,
+                independent=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
     body, _ = HTMLExporter().from_notebook_node(notebook)
     output_html.write_text(body, encoding="utf-8")
@@ -112,15 +151,33 @@ def _validate_qa_config(config: Any) -> dict[str, Any]:
     if last_verified_run is not None and not isinstance(last_verified_run, str):
         raise ValueError("last_verified_run must be a string when provided.")
 
+    pzs_configured = any(
+        config.get(key) is not None for key in ("pzs_prod_name", "pzs_token_path", "pzs_host")
+    )
     input_file = config.get("input_file")
-    if input_file is None:
+    if input_file is None and not pzs_configured:
         raise ValueError("QA config requires input_file with a local curated catalog path.")
-    if not isinstance(input_file, str | Path) or not str(input_file).strip():
+    if input_file is not None and (not isinstance(input_file, str | Path) or not str(input_file).strip()):
         raise ValueError("input_file must be a non-empty path string.")
 
-    input_format = str(config.get("input_format", "parquet")).lower()
-    if input_format not in {"parquet", "csv", "hats"}:
+    input_format = config.get("input_format")
+    if input_format is not None and str(input_format).lower() not in {"parquet", "csv", "hats"}:
         raise ValueError("input_format must be one of: parquet, csv, hats.")
+    if pzs_configured and input_file is None and input_format is not None:
+        raise ValueError("PZ Server input_format override requires an input_file override as well.")
+    pzs_values = {key: config.get(key) for key in ("pzs_prod_name", "pzs_token_path", "pzs_host")}
+    if any(value is not None for value in pzs_values.values()):
+        for key, value in pzs_values.items():
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{key} must be a non-empty string when using PZ Server.")
+        product_name = str(pzs_values["pzs_prod_name"])
+        if Path(product_name).name != product_name or product_name in {".", ".."}:
+            raise ValueError("pzs_prod_name must be a product ID, not a filesystem path.")
+        download_dir = config.get("pzs_download_dir", "./downloaded_data")
+        if not isinstance(download_dir, str | Path) or not str(download_dir).strip():
+            raise ValueError("pzs_download_dir must be a non-empty path string when provided.")
+        if "pzs_overwrite" in config and not isinstance(config["pzs_overwrite"], bool):
+            raise ValueError("pzs_overwrite must be true or false.")
     if "include_absolute_input_path" in config and not isinstance(
         config["include_absolute_input_path"], bool
     ):
@@ -310,8 +367,8 @@ def _output_html(config: dict[str, Any]) -> Path:
 
 
 def _validate_notebook_runtime_paths(config: dict[str, Any]) -> None:
-    input_file = Path(config["input_file"])
-    if not input_file.exists():
+    input_file = Path(config["input_file"]) if config.get("input_file") else None
+    if not _uses_pzserver(config) and input_file is not None and not input_file.exists():
         raise ValueError(f"Cannot generate QA HTML because input_file does not exist: {input_file}")
 
     plots = config.get("plots") or {}
@@ -329,6 +386,8 @@ def _input_size_bytes(path: Path) -> int | None:
 
 
 def _qa_data_mode(config: dict[str, Any]) -> str:
+    if _pzs_runtime_input(config):
+        return "auto"
     if config.get("force_compute", False):
         return "forced_in_memory"
     input_size = _input_size_bytes(Path(config["input_file"]))
@@ -340,7 +399,9 @@ def _qa_data_mode(config: dict[str, Any]) -> str:
 
 def _data_mode_source(config: dict[str, Any]) -> str:
     mode = _qa_data_mode(config)
-    input_size = _input_size_bytes(Path(config["input_file"]))
+    if mode == "auto":
+        return "**Data access mode:** resolved at runtime after PZ Server download"
+    input_size = _input_size_bytes(Path(config["input_file"])) if config.get("input_file") else None
     size_label = "unknown" if input_size is None else f"{input_size / (1024 * 1024):.2f} MB"
     threshold = float(config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB))
     labels = {
@@ -385,6 +446,17 @@ def _build_notebook(config: dict[str, Any]) -> dict[str, Any]:
             _markdown_cell("## Imports and settings"),
             _markdown_cell("Imports."),
             _code_cell(_imports_source(config)),
+        ]
+    )
+    if _uses_pzserver(config):
+        cells.extend(
+            [
+                _markdown_cell("PZ Server configuration."),
+                _code_cell(_pzserver_configuration_source(config)),
+            ]
+        )
+    cells.extend(
+        [
             _markdown_cell("Pandas configuration."),
             _code_cell("pd.set_option('display.max_rows', 10)\npd.set_option('display.max_columns', 40)"),
         ]
@@ -465,6 +537,17 @@ def _imports_source(config: dict[str, Any]) -> str:
         "from IPython.display import display, HTML, Markdown",
         "",
     ]
+    if _uses_pzserver(config):
+        imports.extend(
+            [
+                "# PZ Server",
+                "from pathlib import Path",
+                "import shutil",
+                "import zipfile",
+                "from pzserver import PzServer",
+                "",
+            ]
+        )
     plots = config.get("plots") or {}
     has_plotting = any(
         plots.get(key) for key in ("spatial", "redshift", "quality", "redshift_error", "categorical")
@@ -478,9 +561,11 @@ def _imports_source(config: dict[str, Any]) -> str:
     if has_plotting:
         imports.append("")
     input_format = str(config.get("input_format", "parquet")).lower()
-    if _qa_data_mode(config) == "lazy" and input_format in {"parquet", "csv"}:
+    if _qa_data_mode(config) in {"lazy", "auto"} and (
+        input_format in {"parquet", "csv"} or _pzs_runtime_input(config)
+    ):
         imports.extend(["# Lazy tabular access", "import dask.dataframe as dd", ""])
-    if _qa_data_mode(config) == "lazy":
+    if _qa_data_mode(config) in {"lazy", "auto"}:
         imports.extend(
             [
                 "# Distributed execution",
@@ -490,9 +575,9 @@ def _imports_source(config: dict[str, Any]) -> str:
                 "",
             ]
         )
-    if input_format == "hats":
+    if input_format == "hats" or _pzs_runtime_input(config):
         imports.extend(["# HATS", "import lsdb"])
-    if _qa_data_mode(config) == "lazy":
+    if _qa_data_mode(config) in {"lazy", "auto"}:
         imports.extend(["import warnings", "", _lazy_helpers_source()])
     return "\n".join(imports)
 
@@ -535,6 +620,16 @@ def _dask_setup_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _dask_cleanup_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if _qa_data_mode(config) == "auto":
+        return [
+            _markdown_cell("## Cleanup"),
+            _markdown_cell("Close the QA Dask client and cluster when lazy execution was used."),
+            _code_cell(
+                "if globals().get('qa_cluster_closed') is False:\n"
+                "    close_qa_dask_cluster()\n"
+                "    atexit.unregister(close_qa_dask_cluster)"
+            ),
+        ]
     if _qa_data_mode(config) != "lazy":
         return []
     return [
@@ -545,10 +640,75 @@ def _dask_cleanup_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _local_data_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
-    input_file = _notebook_path(config, config["input_file"])
+    input_file = _notebook_path(config, config["input_file"]) if config.get("input_file") else None
     input_format = str(config.get("input_format", "parquet")).lower()
     mode = _qa_data_mode(config)
-    if mode == "lazy" and input_format == "parquet":
+    if _pzs_runtime_input(config):
+        threshold = float(config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB))
+        force_compute = bool(config.get("force_compute", False))
+        logs_dir = _qa_dask_logs_dir(config)
+        logs_value = _notebook_path(config, logs_dir) if logs_dir is not None else None
+        runtime_input_source = (
+            "qa_input_file, qa_input_format = candidates[0]\n"
+            if _pzs_auto_input(config)
+            else f"qa_input_file = {input_file!r}\nqa_input_format = {input_format!r}\n"
+        )
+        read_source = runtime_input_source + (
+            "def qa_path_size_bytes(path):\n"
+            "    path = Path(path)\n"
+            "    if path.is_file():\n"
+            "        return path.stat().st_size\n"
+            "    return sum(item.stat().st_size for item in path.rglob('*') if item.is_file())\n\n"
+            f"qa_threshold_mb = {threshold!r}\n"
+            f"qa_force_compute = {force_compute!r}\n"
+            "qa_input_size_bytes = qa_path_size_bytes(qa_input_file)\n"
+            "if qa_force_compute:\n"
+            "    qa_access_mode = 'forced_in_memory'\n"
+            "elif qa_input_size_bytes > qa_threshold_mb * 1024 * 1024:\n"
+            "    qa_access_mode = 'lazy'\n"
+            "else:\n"
+            "    qa_access_mode = 'in_memory'\n"
+            "qa_cluster_closed = True\n"
+            "if qa_access_mode == 'lazy':\n"
+            f"    qa_cluster_config = {dask_cluster_config(config)!r}\n"
+            f"    qa_cluster = create_dask_cluster(qa_cluster_config, logs_dir={logs_value!r})\n"
+            "    qa_client = Client(qa_cluster)\n"
+            "    qa_cluster_closed = False\n\n"
+            "    def close_qa_dask_cluster():\n"
+            "        global qa_cluster_closed\n"
+            "        if not qa_cluster_closed:\n"
+            "            qa_client.close()\n"
+            "            qa_cluster.close()\n"
+            "            qa_cluster_closed = True\n\n"
+            "    atexit.register(close_qa_dask_cluster)\n\n"
+            "def qa_open_data(columns=None):\n"
+            "    if qa_access_mode == 'lazy':\n"
+            "        if qa_input_format == 'parquet':\n"
+            "            return dd.read_parquet(qa_input_file, columns=columns)\n"
+            "        if qa_input_format == 'csv':\n"
+            "            return dd.read_csv(qa_input_file, usecols=columns)\n"
+            "        return lsdb.open_catalog(qa_input_file, columns=columns)\n"
+            "    if qa_input_format == 'parquet':\n"
+            "        return pd.read_parquet(qa_input_file, columns=columns)\n"
+            "    if qa_input_format == 'csv':\n"
+            "        return pd.read_csv(qa_input_file, usecols=columns)\n"
+            "    catalog = lsdb.open_catalog(qa_input_file, columns=columns)\n"
+            "    return catalog.compute()\n\n"
+            "qa_runtime_summary = pd.Series({\n"
+            "    'input_file': str(qa_input_file),\n"
+            "    'input_format': qa_input_format,\n"
+            "    'input_size_mb': qa_input_size_bytes / (1024 * 1024),\n"
+            "    'access_mode': qa_access_mode,\n"
+            "})\n"
+            "qa_runtime_summary['input_size_mb'] = f\"{qa_runtime_summary['input_size_mb']:.2f} MB\"\n"
+            "if qa_access_mode == 'lazy':\n"
+            f"    qa_runtime_summary['dask_executor'] = {dask_cluster_config(config)['name']!r}\n"
+            "else:\n"
+            "    qa_runtime_summary['dask_executor'] = 'not used'\n\n"
+            "qa_data = qa_open_data()\n"
+            "qa_input_file, qa_input_format, qa_access_mode"
+        )
+    elif mode == "lazy" and input_format == "parquet":
         read_source = f"df = dd.read_parquet({input_file!r})"
     elif mode == "lazy" and input_format == "csv":
         read_source = f"df = dd.read_csv({input_file!r})"
@@ -567,18 +727,167 @@ def _local_data_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
             "import warnings\n"
             'warnings.warn("force_compute=True: loading the complete QA input into memory.")\n' + read_source
         )
-    return [
-        _markdown_cell("## Basic product information"),
-        _markdown_cell("Retrieve data from local curated catalog."),
-        _code_cell(read_source),
-    ]
+    cells = [_markdown_cell("## Basic product information")]
+    if _uses_pzserver(config):
+        cells.extend(
+            [
+                _markdown_cell("Download and unzip the configured PZ Server product."),
+                _code_cell(_pzserver_download_source(config)),
+            ]
+        )
+    cells.extend(
+        [
+            _markdown_cell("Open the curated catalog."),
+            _code_cell(read_source),
+        ]
+    )
+    return cells
+
+
+def _uses_pzserver(config: dict[str, Any]) -> bool:
+    return config.get("pzs_prod_name") is not None
+
+
+def _pzs_auto_input(config: dict[str, Any]) -> bool:
+    return _uses_pzserver(config) and not config.get("input_file") and not config.get("input_format")
+
+
+def _pzs_runtime_input(config: dict[str, Any]) -> bool:
+    if not _uses_pzserver(config):
+        return False
+    if _pzs_auto_input(config):
+        return True
+    input_file = config.get("input_file")
+    return input_file is not None and not Path(input_file).exists()
+
+
+def _pzserver_configuration_source(config: dict[str, Any]) -> str:
+    token_path = _notebook_path(config, config["pzs_token_path"])
+    return (
+        f"pzs_token_path = Path({token_path!r})\n"
+        "token = pzs_token_path.read_text(encoding='utf-8').strip()\n"
+        f"pz_server = PzServer(token=token, host={config['pzs_host']!r})"
+    )
+
+
+def _pzserver_download_source(config: dict[str, Any]) -> str:
+    download_dir = _notebook_path(config, config.get("pzs_download_dir", "./downloaded_data"))
+    return (
+        f"prod_name = {config['pzs_prod_name']!r}\n"
+        f"download_root = Path({download_dir!r})\n"
+        "download_path = download_root / prod_name\n"
+        f"pzs_overwrite = {config.get('pzs_overwrite', False)!r}\n"
+        "if pzs_overwrite and download_path.exists():\n"
+        "    shutil.rmtree(download_path)\n"
+        "download_path.mkdir(parents=True, exist_ok=True)\n"
+        "pz_server.download_product(product_id=prod_name, save_in=download_path)\n\n"
+        "downloaded_archives = [\n"
+        "    path for path in download_path.iterdir()\n"
+        "    if path.is_file() and zipfile.is_zipfile(path)\n"
+        "]\n"
+        "if not downloaded_archives:\n"
+        "    raise FileNotFoundError(\n"
+        "        f'PZ Server product {prod_name!r} did not produce a ZIP archive in {download_path}'\n"
+        "    )\n"
+        "archive_path = max(downloaded_archives, key=lambda path: path.stat().st_mtime)\n"
+        "with zipfile.ZipFile(archive_path) as archive:\n"
+        "    archive_members = [\n"
+        "        download_path / name for name in archive.namelist() if not name.endswith('/')\n"
+        "    ]\n"
+        "    download_root_resolved = download_path.resolve()\n"
+        "    if any(download_root_resolved not in member.resolve().parents for member in archive_members):\n"
+        "        raise ValueError(f'Unsafe path in PZ Server ZIP archive: {archive_path}')\n"
+        "    archive.extractall(download_path)\n"
+        + (_pzserver_detection_source() if _pzs_auto_input(config) else "")
+    )
+
+
+def _pzserver_detection_source() -> str:
+    return """
+
+def read_properties(path):
+    properties = {}
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if '=' in line and not line.lstrip().startswith('#'):
+            key, value = line.split('=', 1)
+            properties[key.strip()] = value.strip()
+    return properties
+
+collection_candidates = sorted({
+    path.parent for path in archive_members if path.name == 'collection.properties'
+})
+hats_candidates = sorted({
+    path.parent
+    for path in archive_members
+    if path.name == 'hats.properties'
+    and read_properties(path).get('dataproduct_type', 'object') == 'object'
+})
+if collection_candidates:
+    candidates = [('hats', path) for path in collection_candidates]
+elif hats_candidates:
+    candidates = [('hats', path) for path in hats_candidates]
+else:
+    parquet_files = sorted({path for path in archive_members if path.suffix.lower() == '.parquet'})
+    parquet_parents = sorted({path.parent for path in parquet_files})
+    if len(parquet_files) == 1:
+        candidates = [('parquet', parquet_files[0])]
+    elif len(parquet_parents) == 1:
+        candidates = [('parquet', parquet_parents[0])]
+    else:
+        candidates = [('parquet', path) for path in parquet_parents]
+    if not candidates:
+        candidates = [
+            ('csv', path) for path in archive_members if path.suffix.lower() == '.csv'
+        ]
+
+if len(candidates) != 1:
+    raise ValueError(
+        f'Expected exactly one HATS, Parquet, or CSV input in {archive_path}; found {candidates}'
+    )
+qa_input_format, qa_input_file = candidates[0]
+"""
 
 
 def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if _pzs_runtime_input(config):
+        return [
+            _markdown_cell("Detected input and runtime access mode."),
+            _code_cell("qa_runtime_summary"),
+            _markdown_cell("First rows."),
+            _code_cell("qa_data.head()"),
+            _markdown_cell("Total number of rows."),
+            _code_cell(
+                "if qa_access_mode == 'lazy':\n"
+                "    qa_total_rows = qa_row_count(qa_data)\n"
+                "else:\n"
+                "    qa_total_rows = len(qa_data)\n"
+                "qa_total_rows"
+            ),
+            _markdown_cell("Total number of columns."),
+            _code_cell("len(qa_data.columns)"),
+            _markdown_cell("## Basic Statistics "),
+            _code_cell(
+                "if qa_access_mode == 'lazy':\n"
+                "    if qa_input_format == 'hats':\n"
+                "        catalog_statistics = qa_data.aggregate_column_statistics()\n"
+                "    else:\n"
+                "        catalog_statistics = qa_data.describe().compute()\n"
+                "elif qa_input_format == 'hats':\n"
+                "    catalog_statistics = lsdb.open_catalog(qa_input_file).aggregate_column_statistics()\n"
+                "else:\n"
+                "    catalog_statistics = qa_data.describe()\n"
+                "display(HTML(\n"
+                "    '<div style=\"max-height: 520px; overflow: auto;\">'\n"
+                "    + catalog_statistics.to_html(max_rows=None, max_cols=None)\n"
+                "    + '</div>'\n"
+                "))\n"
+                "del catalog_statistics"
+            ),
+        ]
     if _qa_data_mode(config) != "lazy":
         if str(config.get("input_format", "parquet")).lower() == "hats":
             describe_source = (
-                "catalog_statistics = df.describe()\n"
+                "catalog_statistics = catalog.aggregate_column_statistics()\n"
                 "display(HTML(\n"
                 "    '<div style=\"max-height: 520px; overflow: auto;\">'\n"
                 "    + catalog_statistics.to_html(max_rows=None, max_cols=None)\n"
@@ -652,7 +961,14 @@ def _data_quality_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _missing_values_source(config: dict[str, Any]) -> str:
-    if _qa_data_mode(config) == "lazy":
+    if _pzs_runtime_input(config):
+        counts_source = (
+            "if qa_access_mode == 'lazy':\n"
+            "    qa_missing_count_values = qa_missing_counts(qa_data)\n"
+            "else:\n"
+            '    qa_missing_count_values = qa_data.isna().sum().astype("int64")'
+        )
+    elif _qa_data_mode(config) == "lazy":
         source_name = "catalog" if str(config.get("input_format", "parquet")).lower() == "hats" else "df"
         counts_source = f"qa_missing_count_values = qa_missing_counts({source_name})"
     else:
@@ -731,9 +1047,16 @@ def _warnings_source(config: dict[str, Any]) -> str:
         '    if qa_total_rows > 0 and int(qa_missing_row["Missing"]) == qa_total_rows:',
         "        qa_warnings.append(f'Column {qa_missing_row[\"Column\"]!r} is entirely null.')",
     ]
-    mode = _qa_data_mode(config)
     warning_columns = _warning_columns(config)
-    if mode == "lazy" and warning_columns:
+    if _pzs_runtime_input(config) and warning_columns:
+        lines.extend(
+            [
+                _lazy_data_open_source(config, warning_columns).replace("plot_data", "qa_diagnostic_data"),
+                "qa_diagnostic_is_lazy = qa_access_mode == 'lazy'",
+            ]
+        )
+        source_name = "qa_diagnostic_data"
+    elif _qa_data_mode(config) == "lazy" and warning_columns:
         lines.extend(
             [_lazy_data_open_source(config, warning_columns).replace("plot_data", "qa_diagnostic_data")]
         )
@@ -745,7 +1068,26 @@ def _warnings_source(config: dict[str, Any]) -> str:
     if spatial:
         ra = spatial.get("ra_column", "ra")
         dec = spatial.get("dec_column", "dec")
-        if mode == "lazy":
+        if _pzs_runtime_input(config):
+            lines.extend(
+                [
+                    "if qa_diagnostic_is_lazy:",
+                    f"    qa_spatial = qa_spatial_diagnostics({source_name}, {ra!r}, {dec!r})",
+                    "else:",
+                    f"    qa_ra = pd.to_numeric({source_name}[{ra!r}], errors='coerce').to_numpy()",
+                    f"    qa_dec = pd.to_numeric({source_name}[{dec!r}], errors='coerce').to_numpy()",
+                    "    qa_finite_ra = np.isfinite(qa_ra)",
+                    "    qa_finite_dec = np.isfinite(qa_dec)",
+                    "    qa_spatial = pd.Series({",
+                    '        "nonfinite_ra": (~qa_finite_ra).sum(),',
+                    '        "nonfinite_dec": (~qa_finite_dec).sum(),',
+                    '        "ra_outside_range": (qa_finite_ra & ((qa_ra < 0) | (qa_ra >= 360))).sum(),',
+                    '        "dec_outside_range": (qa_finite_dec & ((qa_dec < -90) | (qa_dec > 90))).sum(),',
+                    '        "valid_pairs": (qa_finite_ra & qa_finite_dec).sum(),',
+                    "    })",
+                ]
+            )
+        elif _qa_data_mode(config) == "lazy":
             lines.append(f"qa_spatial = qa_spatial_diagnostics({source_name}, {ra!r}, {dec!r})")
         else:
             lines.extend(
@@ -789,7 +1131,23 @@ def _warnings_source(config: dict[str, Any]) -> str:
         column = plot.get("column", default)
         value_range = plot.get("range")
         variable = f"qa_numeric_{key}"
-        if mode == "lazy":
+        if _pzs_runtime_input(config):
+            lines.extend(
+                [
+                    "if qa_diagnostic_is_lazy:",
+                    f"    {variable} = qa_numeric_diagnostics({source_name}, {column!r}, {value_range!r})",
+                    "else:",
+                    f"    qa_values = pd.to_numeric({source_name}[{column!r}], errors='coerce').to_numpy()",
+                    "    qa_finite = np.isfinite(qa_values)",
+                    f"    {variable} = pd.Series({{'finite': qa_finite.sum(), 'in_range': qa_finite.sum()}})",
+                ]
+            )
+            if value_range is not None:
+                lines.append(
+                    f"    {variable}['in_range'] = (qa_finite & (qa_values >= {value_range[0]!r}) "
+                    f"& (qa_values <= {value_range[1]!r})).sum()"
+                )
+        elif _qa_data_mode(config) == "lazy":
             lines.append(f"{variable} = qa_numeric_diagnostics({source_name}, {column!r}, {value_range!r})")
         else:
             lines.extend(
@@ -834,7 +1192,7 @@ def _warnings_source(config: dict[str, Any]) -> str:
         )
     for warning in _unusable_footprint_warnings(config):
         lines.append(f"qa_warnings.append({warning!r})")
-    if mode == "lazy" and warning_columns:
+    if (_pzs_runtime_input(config) or _qa_data_mode(config) == "lazy") and warning_columns:
         lines.append("del qa_diagnostic_data")
     lines.extend(
         [
@@ -1082,7 +1440,28 @@ def _spatial_plot_source(config: dict[str, Any], spatial: dict[str, Any]) -> str
     ra_column = spatial.get("ra_column", "ra")
     dec_column = spatial.get("dec_column", "dec")
     footprint_code = _footprint_plot_source(config, _configured_footprints(spatial))
-    if _qa_data_mode(config) == "lazy":
+    if _pzs_runtime_input(config):
+        density_source = (
+            _lazy_data_open_source(config, [ra_column, dec_column])
+            + "\nxbins = np.linspace(-np.pi, np.pi, 180)\n"
+            "ybins = np.linspace(-np.pi / 2, np.pi / 2, 90)\n"
+            "if qa_access_mode == 'lazy':\n"
+            f"    H = qa_histogram2d(plot_data, {ra_column!r}, {dec_column!r}, xbins, ybins)\n"
+            "else:\n"
+            f"    x_points = ra_to_mollweide_x(plot_data[{ra_column!r}].values)\n"
+            f"    y_points = np.deg2rad(plot_data[{dec_column!r}].values)\n"
+            "    valid = np.isfinite(x_points) & np.isfinite(y_points)\n"
+            "    x_points = x_points[valid]\n"
+            "    y_points = y_points[valid]\n"
+            "    H, _, _ = np.histogram2d(x_points, y_points, bins=[xbins, ybins])\n"
+            "H = np.ma.masked_where(H == 0, H)\n\n"
+        )
+        cleanup_source = (
+            "\ndel plot_data, H\n"
+            "if 'x_points' in locals(): del x_points\n"
+            "if 'y_points' in locals(): del y_points\n"
+        )
+    elif _qa_data_mode(config) == "lazy":
         density_source = (
             _lazy_data_open_source(config, [ra_column, dec_column])
             + "\nxbins = np.linspace(-np.pi, np.pi, 180)\n"
@@ -1250,6 +1629,8 @@ def _default_footprint_color(index: int) -> str:
 
 
 def _lazy_data_open_source(config: dict[str, Any], columns: list[str]) -> str:
+    if _pzs_runtime_input(config):
+        return f"plot_data = qa_open_data(columns={columns!r})"
     input_file = _notebook_path(config, config["input_file"])
     input_format = str(config.get("input_format", "parquet")).lower()
     if input_format == "parquet":
@@ -1266,6 +1647,46 @@ def _hist_source(config: dict[str, Any], plot: dict[str, Any], default_label: st
     value_range = plot.get("range")
     bins = int(plot.get("bins", 50))
     title = plot.get("title", f"{column} distribution")
+    if _pzs_runtime_input(config):
+        lazy_hist_source = (
+            f"    hist_counts, hist_edges = qa_histogram1d(\n"
+            f"        plot_data, {column!r}, bins={bins}, value_range={value_range!r}\n"
+            "    )\n"
+        )
+        runtime_filter = "    runtime_hist_data = plot_data\n"
+        runtime_xlim = ""
+        cleanup_lines = []
+        if value_range:
+            min_value, max_value = value_range
+            runtime_filter = (
+                f"    runtime_hist_data = plot_data[(plot_data[{column!r}] >= {min_value}) "
+                f"& (plot_data[{column!r}] <= {max_value})]\n"
+            )
+            runtime_xlim = f"plt.xlim({min_value}, {max_value})\n"
+        cleanup_lines = [
+            "del plot_data",
+            "if 'hist_counts' in locals(): del hist_counts, hist_edges, hist_centers",
+            "if 'runtime_hist_data' in locals(): del runtime_hist_data",
+        ]
+        return (
+            _lazy_data_open_source(config, [column])
+            + "\nif qa_access_mode == 'lazy':\n"
+            + lazy_hist_source
+            + "    hist_centers = (hist_edges[:-1] + hist_edges[1:]) / 2\n"
+            + "    plt.figure(figsize=(8, 6))\n"
+            + "    sns.histplot(x=hist_centers, weights=hist_counts, bins=hist_edges.tolist(), kde=False)\n"
+            + "else:\n"
+            + "    plt.figure(figsize=(8, 6))\n"
+            + runtime_filter
+            + f"    sns.histplot(data=runtime_hist_data, x={column!r}, kde=True, bins={bins})\n"
+            + f"plt.xlabel({column!r})\n"
+            + 'plt.ylabel("Count")\n'
+            + f"plt.title({title!r})\n"
+            + runtime_xlim
+            + "plt.tight_layout()\n"
+            + "plt.show()\n"
+            + "\n".join(cleanup_lines)
+        )
     if _qa_data_mode(config) == "lazy":
         lazy_xlim = f"plt.xlim({value_range[0]}, {value_range[1]})\n" if value_range else ""
         return (
@@ -1316,6 +1737,34 @@ def _quality_source(config: dict[str, Any], quality: dict[str, Any]) -> str:
     column = quality.get("column", "quality")
     title = quality.get("title", f"{column} distribution")
     label_rotation = quality.get("label_rotation", 0)
+    if _pzs_runtime_input(config):
+        return (
+            _lazy_data_open_source(config, [column])
+            + "\nif qa_access_mode == 'lazy':\n"
+            + f"    quality_counts = qa_value_counts(plot_data, {column!r})\n"
+            + "    quality_counts = quality_counts[quality_counts.index.notna()]\n"
+            + "    plt.figure(figsize=(8, 6))\n"
+            + "    if quality_counts.empty:\n"
+            + '        plt.text(0.5, 0.5, "No non-null categories", ha="center")\n'
+            + "    else:\n"
+            + "        sns.barplot(x=quality_counts.index.astype(str), y=quality_counts.to_numpy())\n"
+            + "else:\n"
+            + f"    quality_order = sorted(plot_data[{column!r}].dropna().unique(), key=str)\n"
+            + "    plt.figure(figsize=(8, 6))\n"
+            + "    if quality_order:\n"
+            + f"        sns.countplot(data=plot_data, x={column!r}, order=quality_order)\n"
+            + "    else:\n"
+            + '        plt.text(0.5, 0.5, "No non-null categories", ha="center")\n'
+            + f"plt.xlabel({column!r})\n"
+            + 'plt.ylabel("Count")\n'
+            + f"plt.title({title!r})\n"
+            + f"plt.xticks(rotation={label_rotation!r})\n"
+            + "plt.tight_layout()\n"
+            + "plt.show()\n"
+            + "del plot_data\n"
+            + "if 'quality_counts' in locals(): del quality_counts\n"
+            + "if 'quality_order' in locals(): del quality_order"
+        )
     if _qa_data_mode(config) == "lazy":
         return (
             _lazy_data_open_source(config, [column])
