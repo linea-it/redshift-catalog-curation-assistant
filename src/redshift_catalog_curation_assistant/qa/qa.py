@@ -82,31 +82,36 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
             "Install the project with QA HTML dependencies enabled."
         ) from exc
 
-    notebook = nbformat.read(output_notebook, as_version=4)
     with tempfile.TemporaryDirectory(prefix="qa-ipython-") as ipython_dir:
         execution_env = os.environ.copy()
         execution_env["IPYTHONDIR"] = ipython_dir
+        execution_env["JPY_PARENT_PID"] = "0"
+        execution_env.pop("JPY_INTERRUPT_EVENT", None)
+        execution_env.pop("IPY_INTERRUPT_EVENT", None)
+        resources = {"metadata": {"path": str(output_notebook.parent.resolve())}}
+        kernel_name = validated.get("html_kernel_name", "python3")
+        timeout = validated.get("html_execution_timeout", 600)
 
+        notebook = nbformat.read(output_notebook, as_version=4)
         client = NotebookClient(
             notebook,
-            km=AsyncKernelManager(kernel_name=validated.get("html_kernel_name", "python3")),
-            timeout=validated.get("html_execution_timeout", 600),
-            kernel_name=validated.get("html_kernel_name", "python3"),
-            resources={"metadata": {"path": str(output_notebook.parent.resolve())}},
+            timeout=timeout,
+            kernel_name=kernel_name,
+            resources=resources,
         )
+        client.km = AsyncKernelManager(kernel_name=kernel_name)
         client.km.transport = "ipc"
         try:
-            client.execute(env=execution_env)
-        except Exception as exc:
-            if "ipc" not in str(exc).lower():
-                raise
+            client.execute(env=execution_env, independent=True)
+        except Exception:
+            notebook = nbformat.read(output_notebook, as_version=4)
             client = NotebookClient(
                 notebook,
-                timeout=validated.get("html_execution_timeout", 600),
-                kernel_name=validated.get("html_kernel_name", "python3"),
-                resources={"metadata": {"path": str(output_notebook.parent.resolve())}},
+                timeout=timeout,
+                kernel_name=kernel_name,
+                resources=resources,
             )
-            client.execute(env=execution_env)
+            client.execute(env=execution_env, independent=True)
 
     body, _ = HTMLExporter().from_notebook_node(notebook)
     output_html.write_text(body, encoding="utf-8")
