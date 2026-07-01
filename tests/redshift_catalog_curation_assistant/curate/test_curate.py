@@ -4,9 +4,11 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import yaml
 
 from redshift_catalog_curation_assistant.curate import CurateError, curate_catalog
 from redshift_catalog_curation_assistant.curate.curate import load_curate_config
+from redshift_catalog_curation_assistant.prepare import prepare_catalog
 
 
 @contextmanager
@@ -334,7 +336,7 @@ def test_curate_hats_input_can_write_hats_collection(tmp_path, monkeypatch):
     with pytest.warns(UserWarning, match="did not open with a default margin"):
         curated = curate_catalog(
             {
-                "input_file": "tests/data/raw/elaisfbmc_collection",
+                "input_file": "tests/data/raw/elaisfbmc_sample",
                 "output_dir": str(output_dir),
                 "overwrite": True,
                 "output_format": "hats",
@@ -380,7 +382,7 @@ def test_curate_hats_input_can_keep_invalid_redshifts(tmp_path, monkeypatch):
 
     curate_catalog(
         {
-            "input_file": "tests/data/raw/elaisfbmc_collection",
+            "input_file": "tests/data/raw/elaisfbmc_sample",
             "output_dir": str(output_dir),
             "overwrite": True,
             "output_format": "hats",
@@ -421,7 +423,7 @@ def test_curate_hats_input_can_disable_margin_output(tmp_path, monkeypatch):
 
     curated = curate_catalog(
         {
-            "input_file": "tests/data/raw/elaisfbmc_collection",
+            "input_file": "tests/data/raw/elaisfbmc_sample",
             "output_dir": str(output_dir),
             "overwrite": True,
             "output_format": "hats",
@@ -454,7 +456,7 @@ def test_curate_hats_rejects_zero_margin_threshold(tmp_path):
     with pytest.raises(CurateError, match="margin_threshold cannot be 0"):
         curate_catalog(
             {
-                "input_file": "tests/data/raw/elaisfbmc_collection",
+                "input_file": "tests/data/raw/elaisfbmc_sample",
                 "output_dir": str(tmp_path / "curated_hats"),
                 "overwrite": True,
                 "output_format": "hats",
@@ -478,7 +480,7 @@ def test_curate_hats_input_requires_hats_output(tmp_path):
     with pytest.raises(CurateError, match="HATS curate input currently requires output_format: hats"):
         curate_catalog(
             {
-                "input_file": "tests/data/raw/elaisfbmc_collection",
+                "input_file": "tests/data/raw/elaisfbmc_sample",
                 "output_dir": str(tmp_path / "curated"),
                 "coordinates": {
                     "ra_column": "RAdeg",
@@ -1383,7 +1385,10 @@ def test_curate_multi_file_rejects_schema_mismatch(tmp_path):
 
 def test_curate_2mrs_velocity_fixture(tmp_path):
     """Verify 2MRS velocity conversion on the prepared multi-file sample."""
-    path = Path("tests/data/prepared/2mrs.parquet")
+    prepare_config = yaml.safe_load(Path("configs/prepare/2mrs.example.yaml").read_text())
+    path = tmp_path / "prepared"
+    prepare_config["output_dir"] = str(path)
+    prepare_catalog(prepare_config)
     output_dir = tmp_path / "curated"
     curate_catalog(
         {
@@ -1411,11 +1416,11 @@ def test_curate_2mrs_velocity_fixture(tmp_path):
 
     df = pd.read_parquet(sorted(output_dir.glob("*.parquet"))[0])
     assert {"redshift", "redshift_err"}.issubset(df.columns)
-    assert len(df) == 2000
+    assert len(df) == 40
     assert df[["DELRA", "DELDC", "MCHTOL"]].isna().sum().to_dict() == {
-        "DELRA": 1000,
-        "DELDC": 1000,
-        "MCHTOL": 1000,
+        "DELRA": 20,
+        "DELDC": 20,
+        "MCHTOL": 20,
     }
 
 
@@ -1424,13 +1429,9 @@ def test_curate_2mrs_velocity_fixture(tmp_path):
     [
         "configs/curate/synthetic.example.yaml",
         "configs/curate/2dfgrs.example.yaml",
-        "configs/curate/2dflens.example.yaml",
         "configs/curate/2mrs.example.yaml",
         "configs/curate/6dfgs.example.yaml",
-        "configs/curate/desi_deep_pilot.example.yaml",
-        "configs/curate/elaisfbmc_collection.example.yaml",
-        "configs/curate/euclid_parquet_sample.example.yaml",
-        "configs/curate/sdss_dr19.example.yaml",
+        "configs/curate/elaisfbmc.example.yaml",
     ],
 )
 def test_curate_versioned_sample_configs(config_path, tmp_path, monkeypatch):
@@ -1440,6 +1441,15 @@ def test_curate_versioned_sample_configs(config_path, tmp_path, monkeypatch):
     monkeypatch.setattr(cur, "dask_client_context", fake_dask_client_context)
     monkeypatch.setattr(cur, "add_margin_to_hats_collection", lambda *args, **kwargs: None)
     config = load_curate_config(Path(config_path))
+    catalog = Path(config_path).stem.removesuffix(".example")
+    prepare_path = Path("configs/prepare") / f"{catalog}.example.yaml"
+    if prepare_path.exists() and "/prepared/" in config["input_file"]:
+        prepare_config = yaml.safe_load(prepare_path.read_text())
+        prepared_dir = tmp_path / f"prepared-{catalog}"
+        prepare_config["output_dir"] = str(prepared_dir)
+        prepare_config["dask_cluster"] = None
+        prepare_catalog(prepare_config)
+        config["input_file"] = str(prepared_dir)
     config["output_dir"] = str(tmp_path / Path(config_path).stem)
 
     output_dir = curate_catalog(config)

@@ -4,7 +4,7 @@ title: Example Catalog
 subtitle: Basic dataset characterization
 
 # Local curated Parquet, CSV, or HATS input.
-input_file: tests/data/curated/example.parquet
+input_file: reports/curated/example.parquet
 input_format: parquet
 
 # Output notebook path. Use output_dir instead to write qa_notebook.ipynb there.
@@ -86,7 +86,7 @@ plots:
     dec_column: dec
     title: Example Catalog - Spatial distribution
     footprints:
-      - path: tests/data/curves/example.csv
+      - path: path/to/footprint.csv
         # Optional explicit schema: region_vertices or declination_limit.
         format: region_vertices
         label: Example footprint

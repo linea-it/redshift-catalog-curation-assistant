@@ -9,7 +9,7 @@ Minimal Example
 
 .. code-block:: yaml
 
-   input_file: tests/data/raw/synthetic_redshift_catalog.csv
+   input_file: tests/data/raw/synthetic_sample.csv
    survey_name: SYNTHETIC_REDSHIFT
 
 Required Fields
@@ -153,7 +153,7 @@ Inspect a HATS collection:
 
 .. code-block:: console
 
-   redshift-curator inspect configs/inspect/elaisfbmc_collection.example.yaml
+   redshift-curator inspect configs/inspect/elaisfbmc.example.yaml
 
 Inspect a FITS file after checking HDUs:
 

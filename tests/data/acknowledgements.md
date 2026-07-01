@@ -1,8 +1,7 @@
-# Test Data and Asset Acknowledgements
+# Test Data Acknowledgements
 
-This file records acknowledgements for public data, images, curves, and other
-visual materials used or referenced by fixtures and example QA configurations in
-this repository.
+This file records acknowledgements for public catalog data used by fixtures and
+example configurations in this repository.
 
 ## Survey Catalogs
 
@@ -13,46 +12,33 @@ catalog. The 2dF Galaxy Redshift Survey was made possible through the dedicated
 efforts of the staff of the Anglo-Australian Observatory, both in creating the
 2dF instrument and in supporting the survey observations.
 
-### 2dFLenS Final Data Release
-
-We acknowledge the use of the 2dFLenS Final Data Release catalog. Additional
-information about the 2dFLenS Survey can be found on the official survey
-homepage and in its main article.
-
-### C3R2 DR3
-
-This work uses data from the C3R2 Survey. We acknowledge the C3R2 collaboration
-and cite Masters et al. (2017), Masters et al. (2019), and Stanford et al.
-(2021).
-
 ### 2MRS V240
 
 This work uses data products produced by the OIR Telescope Data Center,
 supported by the Smithsonian Astrophysical Observatory.
 
-## Footprint Curves
+### 6dFGS Final Release
 
-### Rubin Observatory and LSST
+The data used in this repository come from the Final Release of 6dFGS. For
+more information, see the [6dFGS DR3 paper (Jones et al.
+2009)](http://www.6dfgs.net/Publications/REFEREED/6dFGS_DR3_lowres.pdf) and the
+[original 6dFGS survey paper (Jones et al. 2004, MNRAS 355,
+747)](http://www.aao.gov.au/local/www/6df/Publications/index.html).
 
-This work uses publicly available data, images, and/or visual materials from the
-NSF-DOE Vera C. Rubin Observatory and its Legacy Survey of Space and Time
-(LSST). This material is based upon work supported in part by the National
-Science Foundation through Cooperative Agreements AST-1258333 and AST-2241526
-and Cooperative Support Agreements AST-1202910 and 2211468 managed by the
-Association of Universities for Research in Astronomy (AURA), and the Department
-of Energy under Contract No. DE-AC02-76SF00515 with the SLAC National
-Accelerator Laboratory managed by Stanford University. Additional Rubin
-Observatory funding comes from private donations, grants to universities, and
-in-kind support from LSST-DA Institutional Members.
+### DESI-Deep Pilot Program
 
-## Images and Services
+We acknowledge the use of the data products associated with the DESI-Deep
+pilot program, presented in [*Deep Spectroscopy with DESI for Photometric
+Redshift Training and Calibration*](https://arxiv.org/pdf/2604.06143) by Dey
+et al. (2026). These data combine HSC photometry, DESI spectroscopic redshift
+measurements, and visual inspection labels, providing an important reference
+sample for photometric-redshift training and calibration in the context of
+upcoming LSST weak-lensing analyses. We thank the authors and the DESI
+Collaboration for making these data products available to the community.
 
-### LIneA
+### ELAIS
 
-This work uses publicly available services, data products, images, and/or visual
-materials provided by the Associação Laboratório Interinstitucional de
-e-Astronomia (LIneA). Database access, computational resources, and other data
-services are provided by LIneA with financial support from INCT do e-Universo
-(Process no. 465376/2014-2). When applicable, this work also acknowledges
-support from the FINEP project “LIneA: e-Science Center for exploring the
-mysteries of the Universe and support Big Data projects” (ref. no. 0883/24).
+This work makes use of public data products from the [European Large-Area ISO
+Survey (ELAIS)](https://heasarc.gsfc.nasa.gov/W3Browse/all/elaisfbmc.html). We
+acknowledge the European Large-Area ISO Survey article by [Rowan-Robinson et
+al. (2004)](https://ui.adsabs.harvard.edu/abs/2004MNRAS.351.1290R/abstract).

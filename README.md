@@ -28,9 +28,9 @@ python -m pip install -e '.[dev]'
 redshift-curator --help
 redshift-curator inspect configs/inspect/synthetic.example.yaml
 redshift-curator inspect-fits tests/data/raw/desi_deep_pilot_sample.fits
-redshift-curator prepare configs/prepare/desi_deep_pilot.example.yaml
-redshift-curator curate configs/curate/synthetic.example.yaml
-redshift-curator qa configs/qa/c3r2_dr3.example.yaml
+redshift-curator prepare configs/prepare/2mrs.example.yaml
+redshift-curator curate configs/curate/2mrs.example.yaml
+redshift-curator qa configs/qa/2mrs.example.yaml
 ```
 
 Functional commands:
@@ -52,10 +52,10 @@ For large, multi-file, or repeated workflows, prepare first. The full local
 workflow is:
 
 ```bash
-redshift-curator prepare configs/prepare/<catalog>.example.yaml
-redshift-curator inspect configs/inspect/<catalog>.example.yaml
-redshift-curator curate configs/curate/<catalog>.example.yaml
-redshift-curator qa configs/qa/<catalog>.example.yaml
+redshift-curator inspect configs/inspect/synthetic.example.yaml
+redshift-curator prepare configs/prepare/2mrs.example.yaml
+redshift-curator curate configs/curate/2mrs.example.yaml
+redshift-curator qa configs/qa/2mrs.example.yaml
 ```
 
 `prepare` accepts one file or a list of files representing one logical
@@ -92,8 +92,8 @@ Detailed documentation lives in `docs/`:
 - `docs/large-data.rst`
 - `docs/sample-data.md`
 
-Acknowledgements for public data, images, footprint curves, and other external
-materials used or referenced by test fixtures and examples are maintained in
+Acknowledgements for public data and other external materials used by test
+fixtures and examples are maintained in
 `tests/data/acknowledgements.md`. Keep this file updated when adding or changing
 data assets.
 
@@ -104,6 +104,7 @@ pytest -q
 pre-commit run --all-files
 ```
 
-Large source catalogs and exploratory generated artifacts should not be
-committed. Small, redistributable raw, prepared, and curated fixtures used by
-tests live under `tests/data/`.
+Large source catalogs and generated pipeline artifacts should not be committed.
+Only small, redistributable source fixtures used by tests live under
+`tests/data/raw/`; prepared and curated outputs are created in temporary test
+directories.

@@ -1,5 +1,5 @@
-input_file: tests/data/prepared/2mrs.parquet
-output_dir: tests/data/curated/2mrs.parquet
+input_file: reports/prepared/2mrs.parquet
+output_dir: reports/curated/2mrs.parquet
 overwrite: true
 
 coordinates:

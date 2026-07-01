@@ -1,5 +1,5 @@
-input_file: tests/data/raw/elaisfbmc_collection
-output_dir: outputs/curated/elaisfbmc_collection_hats
+input_file: tests/data/raw/elaisfbmc_sample
+output_dir: reports/curated/elaisfbmc_hats
 overwrite: true
 output_format: hats
 

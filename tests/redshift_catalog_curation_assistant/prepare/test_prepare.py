@@ -770,24 +770,19 @@ def test_prepare_2mrs_fits_union_preserves_optional_columns(tmp_path):
     output_dir = prepare_catalog(config)
     result = pd.read_parquet(output_dir)
 
-    assert result.shape == (2000, 32)
+    assert result.shape == (40, 32)
     assert result[["DELRA", "DELDC", "MCHTOL"]].isna().sum().to_dict() == {
-        "DELRA": 1000,
-        "DELDC": 1000,
-        "MCHTOL": 1000,
+        "DELRA": 20,
+        "DELDC": 20,
+        "MCHTOL": 20,
     }
 
 
 @pytest.mark.parametrize(
     "config_path",
     [
-        "configs/prepare/2dfgrs.example.yaml",
-        "configs/prepare/2dflens.example.yaml",
         "configs/prepare/2mrs.example.yaml",
-        "configs/prepare/6dfgs.example.yaml",
         "configs/prepare/desi_deep_pilot.example.yaml",
-        "configs/prepare/euclid_parquet_sample.example.yaml",
-        "configs/prepare/sdss_dr19.example.yaml",
         "configs/prepare/synthetic.example.yaml",
         "configs/prepare/synthetic_hats.example.yaml",
     ],
