@@ -1,4 +1,5 @@
 import json
+import subprocess
 import warnings
 from datetime import date
 
@@ -487,12 +488,13 @@ def test_run_qa_config_can_execute_notebook_and_export_html(tmp_path, monkeypatc
     execute_calls = []
 
     class FakeNotebookClient:
-        def __init__(self, notebook, timeout, kernel_name, resources, km=None):
+        def __init__(self, notebook, timeout, kernel_name, resources, km=None, shutdown_kernel=None):
             self.notebook = notebook
             self.timeout = timeout
             self.kernel_name = kernel_name
             self.resources = resources
             self.km = km
+            self.shutdown_kernel = shutdown_kernel
 
         def execute(self, **kwargs):
             execute_calls.append(kwargs)
@@ -529,10 +531,13 @@ def test_run_qa_config_can_execute_notebook_and_export_html(tmp_path, monkeypatc
     assert "Executed QA" in artifacts["html"].read_text(encoding="utf-8")
     assert len(execute_calls) == 1
     assert execute_calls[0]["independent"] is True
-    assert execute_calls[0]["env"]["JPY_PARENT_PID"] == "0"
+    assert execute_calls[0]["env"]["JPY_PARENT_PID"] == "1"
     assert execute_calls[0]["env"]["IPYTHONDIR"]
     assert "JPY_INTERRUPT_EVENT" not in execute_calls[0]["env"]
     assert "IPY_INTERRUPT_EVENT" not in execute_calls[0]["env"]
+    assert execute_calls[0]["stdin"] is subprocess.DEVNULL
+    assert execute_calls[0]["stdout"] is subprocess.DEVNULL
+    assert execute_calls[0]["stderr"] is subprocess.DEVNULL
 
     notebook = json.loads(output_notebook.read_text())
     code_cells = [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]

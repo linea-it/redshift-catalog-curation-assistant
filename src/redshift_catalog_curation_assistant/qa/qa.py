@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -85,7 +86,7 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
     with tempfile.TemporaryDirectory(prefix="qa-ipython-") as ipython_dir:
         execution_env = os.environ.copy()
         execution_env["IPYTHONDIR"] = ipython_dir
-        execution_env["JPY_PARENT_PID"] = "0"
+        execution_env["JPY_PARENT_PID"] = "1"
         execution_env.pop("JPY_INTERRUPT_EVENT", None)
         execution_env.pop("IPY_INTERRUPT_EVENT", None)
         resources = {"metadata": {"path": str(output_notebook.parent.resolve())}}
@@ -98,11 +99,18 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
             timeout=timeout,
             kernel_name=kernel_name,
             resources=resources,
+            shutdown_kernel="immediate",
         )
         client.km = AsyncKernelManager(kernel_name=kernel_name)
         client.km.transport = "ipc"
         try:
-            client.execute(env=execution_env, independent=True)
+            client.execute(
+                env=execution_env,
+                independent=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except Exception:
             notebook = nbformat.read(output_notebook, as_version=4)
             client = NotebookClient(
@@ -110,8 +118,15 @@ def execute_qa_notebook_to_html(config: dict[str, Any], notebook_path: Path | No
                 timeout=timeout,
                 kernel_name=kernel_name,
                 resources=resources,
+                shutdown_kernel="immediate",
             )
-            client.execute(env=execution_env, independent=True)
+            client.execute(
+                env=execution_env,
+                independent=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
     body, _ = HTMLExporter().from_notebook_node(notebook)
     output_html.write_text(body, encoding="utf-8")
