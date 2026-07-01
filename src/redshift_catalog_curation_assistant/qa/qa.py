@@ -366,7 +366,7 @@ def _input_size_bytes(path: Path) -> int | None:
 
 
 def _qa_data_mode(config: dict[str, Any]) -> str:
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         return "auto"
     if config.get("force_compute", False):
         return "forced_in_memory"
@@ -542,7 +542,7 @@ def _imports_source(config: dict[str, Any]) -> str:
         imports.append("")
     input_format = str(config.get("input_format", "parquet")).lower()
     if _qa_data_mode(config) in {"lazy", "auto"} and (
-        input_format in {"parquet", "csv"} or _pzs_auto_input(config)
+        input_format in {"parquet", "csv"} or _pzs_runtime_input(config)
     ):
         imports.extend(["# Lazy tabular access", "import dask.dataframe as dd", ""])
     if _qa_data_mode(config) in {"lazy", "auto"}:
@@ -555,7 +555,7 @@ def _imports_source(config: dict[str, Any]) -> str:
                 "",
             ]
         )
-    if input_format == "hats" or _pzs_auto_input(config):
+    if input_format == "hats" or _pzs_runtime_input(config):
         imports.extend(["# HATS", "import lsdb"])
     if _qa_data_mode(config) in {"lazy", "auto"}:
         imports.extend(["import warnings", "", _lazy_helpers_source()])
@@ -623,12 +623,17 @@ def _local_data_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
     input_file = _notebook_path(config, config["input_file"]) if config.get("input_file") else None
     input_format = str(config.get("input_format", "parquet")).lower()
     mode = _qa_data_mode(config)
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         threshold = float(config.get("large_input_threshold_mb", DEFAULT_LARGE_INPUT_THRESHOLD_MB))
         force_compute = bool(config.get("force_compute", False))
         logs_dir = _qa_dask_logs_dir(config)
         logs_value = _notebook_path(config, logs_dir) if logs_dir is not None else None
-        read_source = (
+        runtime_input_source = (
+            "qa_input_file, qa_input_format = candidates[0]\n"
+            if _pzs_auto_input(config)
+            else f"qa_input_file = {input_file!r}\nqa_input_format = {input_format!r}\n"
+        )
+        read_source = runtime_input_source + (
             "def qa_path_size_bytes(path):\n"
             "    path = Path(path)\n"
             "    if path.is_file():\n"
@@ -727,6 +732,15 @@ def _pzs_auto_input(config: dict[str, Any]) -> bool:
     return _uses_pzserver(config) and not config.get("input_file") and not config.get("input_format")
 
 
+def _pzs_runtime_input(config: dict[str, Any]) -> bool:
+    if not _uses_pzserver(config):
+        return False
+    if _pzs_auto_input(config):
+        return True
+    input_file = config.get("input_file")
+    return input_file is not None and not Path(input_file).exists()
+
+
 def _pzserver_configuration_source(config: dict[str, Any]) -> str:
     token_path = _notebook_path(config, config["pzs_token_path"])
     return (
@@ -815,7 +829,7 @@ qa_input_format, qa_input_file = candidates[0]
 
 
 def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         return [
             _markdown_cell("Detected input and runtime access mode."),
             _code_cell("qa_runtime_summary"),
@@ -838,6 +852,8 @@ def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "        catalog_statistics = qa_data.aggregate_column_statistics()\n"
                 "    else:\n"
                 "        catalog_statistics = qa_data.describe().compute()\n"
+                "elif qa_input_format == 'hats':\n"
+                "    catalog_statistics = lsdb.open_catalog(qa_input_file).aggregate_column_statistics()\n"
                 "else:\n"
                 "    catalog_statistics = qa_data.describe()\n"
                 "display(HTML(\n"
@@ -851,7 +867,7 @@ def _basic_information_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
     if _qa_data_mode(config) != "lazy":
         if str(config.get("input_format", "parquet")).lower() == "hats":
             describe_source = (
-                "catalog_statistics = df.describe()\n"
+                "catalog_statistics = catalog.aggregate_column_statistics()\n"
                 "display(HTML(\n"
                 "    '<div style=\"max-height: 520px; overflow: auto;\">'\n"
                 "    + catalog_statistics.to_html(max_rows=None, max_cols=None)\n"
@@ -925,7 +941,7 @@ def _data_quality_cells(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _missing_values_source(config: dict[str, Any]) -> str:
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         counts_source = (
             "if qa_access_mode == 'lazy':\n"
             "    qa_missing_count_values = qa_missing_counts(qa_data)\n"
@@ -1012,7 +1028,7 @@ def _warnings_source(config: dict[str, Any]) -> str:
         "        qa_warnings.append(f'Column {qa_missing_row[\"Column\"]!r} is entirely null.')",
     ]
     warning_columns = _warning_columns(config)
-    if _pzs_auto_input(config) and warning_columns:
+    if _pzs_runtime_input(config) and warning_columns:
         lines.extend(
             [
                 _lazy_data_open_source(config, warning_columns).replace("plot_data", "qa_diagnostic_data"),
@@ -1032,7 +1048,7 @@ def _warnings_source(config: dict[str, Any]) -> str:
     if spatial:
         ra = spatial.get("ra_column", "ra")
         dec = spatial.get("dec_column", "dec")
-        if _pzs_auto_input(config):
+        if _pzs_runtime_input(config):
             lines.extend(
                 [
                     "if qa_diagnostic_is_lazy:",
@@ -1095,7 +1111,7 @@ def _warnings_source(config: dict[str, Any]) -> str:
         column = plot.get("column", default)
         value_range = plot.get("range")
         variable = f"qa_numeric_{key}"
-        if _pzs_auto_input(config):
+        if _pzs_runtime_input(config):
             lines.extend(
                 [
                     "if qa_diagnostic_is_lazy:",
@@ -1156,7 +1172,7 @@ def _warnings_source(config: dict[str, Any]) -> str:
         )
     for warning in _unusable_footprint_warnings(config):
         lines.append(f"qa_warnings.append({warning!r})")
-    if (_pzs_auto_input(config) or _qa_data_mode(config) == "lazy") and warning_columns:
+    if (_pzs_runtime_input(config) or _qa_data_mode(config) == "lazy") and warning_columns:
         lines.append("del qa_diagnostic_data")
     lines.extend(
         [
@@ -1404,7 +1420,7 @@ def _spatial_plot_source(config: dict[str, Any], spatial: dict[str, Any]) -> str
     ra_column = spatial.get("ra_column", "ra")
     dec_column = spatial.get("dec_column", "dec")
     footprint_code = _footprint_plot_source(config, _configured_footprints(spatial))
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         density_source = (
             _lazy_data_open_source(config, [ra_column, dec_column])
             + "\nxbins = np.linspace(-np.pi, np.pi, 180)\n"
@@ -1593,7 +1609,7 @@ def _default_footprint_color(index: int) -> str:
 
 
 def _lazy_data_open_source(config: dict[str, Any], columns: list[str]) -> str:
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         return f"plot_data = qa_open_data(columns={columns!r})"
     input_file = _notebook_path(config, config["input_file"])
     input_format = str(config.get("input_format", "parquet")).lower()
@@ -1611,7 +1627,7 @@ def _hist_source(config: dict[str, Any], plot: dict[str, Any], default_label: st
     value_range = plot.get("range")
     bins = int(plot.get("bins", 50))
     title = plot.get("title", f"{column} distribution")
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         lazy_hist_source = (
             f"    hist_counts, hist_edges = qa_histogram1d(\n"
             f"        plot_data, {column!r}, bins={bins}, value_range={value_range!r}\n"
@@ -1701,7 +1717,7 @@ def _quality_source(config: dict[str, Any], quality: dict[str, Any]) -> str:
     column = quality.get("column", "quality")
     title = quality.get("title", f"{column} distribution")
     label_rotation = quality.get("label_rotation", 0)
-    if _pzs_auto_input(config):
+    if _pzs_runtime_input(config):
         return (
             _lazy_data_open_source(config, [column])
             + "\nif qa_access_mode == 'lazy':\n"

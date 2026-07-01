@@ -110,6 +110,7 @@ def test_generate_qa_notebook_supports_hats_input(tmp_path):
 
     assert any("import lsdb" in source for source in sources)
     assert any("catalog = lsdb.open_catalog('" in source for source in sources)
+    assert any("catalog.aggregate_column_statistics()" in source for source in sources)
     assert any("curated/hats_catalog" in source for source in sources)
     assert any("max-height: 520px; overflow: auto" in source for source in sources)
 
@@ -141,7 +142,9 @@ def test_generate_qa_notebook_downloads_optional_pzserver_product(tmp_path):
     assert "shutil.rmtree(download_path)" in combined
     assert "pz_server.download_product(product_id=prod_name, save_in=download_path)" in combined
     assert "archive.extractall(download_path)" in combined
-    assert "df = pd.read_parquet('downloaded_data/303_c3r2_dr3/catalog.parquet')" in sources
+    assert "qa_input_file = 'downloaded_data/303_c3r2_dr3/catalog.parquet'" in combined
+    assert "qa_input_format = 'parquet'" in combined
+    assert "qa_data = qa_open_data()" in combined
 
 
 def test_generate_qa_notebook_autodetects_unzipped_pzserver_input(tmp_path):
@@ -234,6 +237,33 @@ def test_generate_qa_notebook_supports_force_compute_with_pzserver_autodetection
 
     assert "qa_force_compute = True" in combined
     assert "qa_access_mode = 'forced_in_memory'" in combined
+
+
+def test_generate_qa_notebook_defers_manual_pzserver_input_mode_until_download(tmp_path):
+    """Ensure hybrid PZ Server configs resolve access mode at runtime when the local path appears later."""
+    output_notebook = tmp_path / "qa.ipynb"
+
+    generate_qa_notebook(
+        {
+            "output_notebook": str(output_notebook),
+            "include_absolute_input_path": False,
+            "pzs_prod_name": "314_desi_dr1_lite",
+            "pzs_token_path": str(tmp_path / "token.txt"),
+            "pzs_host": "pz",
+            "pzs_download_dir": str(tmp_path / "downloaded_data"),
+            "input_file": str(tmp_path / "downloaded_data" / "314_desi_dr1_lite" / "desi_dr1_lite_head"),
+            "input_format": "hats",
+        }
+    )
+
+    notebook = json.loads(output_notebook.read_text())
+    combined = "\n".join("".join(cell["source"]) for cell in notebook["cells"])
+
+    assert "**Data access mode:** resolved at runtime after PZ Server download" in combined
+    assert "qa_input_file = 'downloaded_data/314_desi_dr1_lite/desi_dr1_lite_head'" in combined
+    assert "qa_input_format = 'hats'" in combined
+    assert "qa_input_size_bytes = qa_path_size_bytes(qa_input_file)" in combined
+    assert "qa_runtime_summary = pd.Series({" in combined
 
 
 def test_generate_qa_notebook_compiles_for_pzserver_autodetection_with_plots(tmp_path):
