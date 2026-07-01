@@ -58,15 +58,11 @@ Input And Output
   ``force_compute`` and ``large_input_threshold_mb`` rules as ordinary local
   inputs.
 
-PZ Server references
-^^^^^^^^^^^^^^^^^^^^
+  For PZ Server setup and usage details, see:
 
-The QA pipeline support documented here relies on the public PZ Server
-interfaces and reference materials maintained by LIneA:
-
-- documentation: https://docs.linea.org.br/en/sci-platforms/pz_server.html
-- website: https://pzserver.linea.org.br/
-- Python library: https://pypi.org/project/pzserver/
+  - documentation: https://docs.linea.org.br/en/sci-platforms/pz_server.html
+  - website: https://pzserver.linea.org.br/
+  - Python package: https://pypi.org/project/pzserver/
 
 ``output_notebook`` or ``output_dir``
   Optional notebook destination. Configure at most one. ``output_notebook``
