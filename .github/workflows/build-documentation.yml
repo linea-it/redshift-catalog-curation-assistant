@@ -3,12 +3,17 @@
 
 name: Build documentation
 
-
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,7 +21,6 @@ concurrency:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
@@ -36,6 +40,27 @@ jobs:
     - name: Install notebook requirements
       run: |
         sudo apt-get install pandoc
+    - name: Configure GitHub Pages
+      if: github.event_name != 'pull_request'
+      uses: actions/configure-pages@v5
     - name: Build docs
       run: |
         sphinx-build -T -E -b html -d docs/build/doctrees ./docs docs/build/html
+    - name: Upload Pages artifact
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: docs/build/html
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
