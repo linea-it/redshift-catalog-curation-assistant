@@ -42,7 +42,7 @@ dependencies = [
 redshift-curator = "redshift_catalog_curation_assistant.cli.cli:main"
 
 [project.urls]
-"Source Code" = "https://github.com/luigilcsilva/redshift-catalog-curation-assistant"
+"Source Code" = "https://github.com/linea-it/redshift-catalog-curation-assistant"
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)
 [project.optional-dependencies]

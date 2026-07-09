@@ -18,7 +18,7 @@ project_description: A simple, reproducible and extensible tool to aid in the te
     curation of heterogeneous redshift catalogs.
 project_license: MIT
 project_name: redshift-catalog-curation-assistant
-project_organization: luigilcsilva
+project_organization: linea-it
 python_versions:
 - '3.11'
 - '3.12'
